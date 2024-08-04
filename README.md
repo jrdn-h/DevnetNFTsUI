@@ -1,5 +1,13 @@
 This is a [Next.js](https://nextjs.org/) project bootstrapped with [`create-next-app`](https://github.com/vercel/next.js/tree/canary/packages/create-next-app).
 
+This template is designed to be used for web3 Development with the Metaplex protocols and Solana WalletAdapter.
+
+## Template includes
+- Metaplex Umi
+- Solana Wallet Adapter
+- Tailwind CSS
+- Theme (Light and Dark mode) ready
+
 ## Getting Started
 
 ### Create .env.local
