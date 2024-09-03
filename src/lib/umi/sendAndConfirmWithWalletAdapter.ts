@@ -12,7 +12,6 @@ const sendAndConfirmWalletAdapter = async (
 ) => {
   const umi = useUmiStore.getState().umi;
   const currentSigner = useUmiStore.getState().signer;
-  console.log("currentSigner", currentSigner);
   umi.use(signerIdentity(currentSigner!));
 
   const blockhash = await umi.rpc.getLatestBlockhash({
@@ -25,13 +24,15 @@ const sendAndConfirmWalletAdapter = async (
 
   const signedTx = await transactions.buildAndSign(umi);
 
-  const signature = await umi.rpc.sendTransaction(signedTx, {
-    preflightCommitment: settings?.commitment || "confirmed",
-    commitment: settings?.commitment || "confirmed",
-    skipPreflight: settings?.skipPreflight || false,
-  }).catch((err) => {
-    throw new Error(`Transaction failed: ${err}`);
-  });
+  const signature = await umi.rpc
+    .sendTransaction(signedTx, {
+      preflightCommitment: settings?.commitment || "confirmed",
+      commitment: settings?.commitment || "confirmed",
+      skipPreflight: settings?.skipPreflight || false,
+    })
+    .catch((err) => {
+      throw new Error(`Transaction failed: ${err}`);
+    });
 
   const confirmation = await umi.rpc.confirmTransaction(signature, {
     strategy: { type: "blockhash", ...blockhash },

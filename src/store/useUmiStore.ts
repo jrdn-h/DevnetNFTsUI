@@ -18,14 +18,13 @@ interface UmiState {
 }
 
 const useUmiStore = create<UmiState>()((set) => ({
-  umi: createUmi("http://127.0.0.1:8899").use(
+  umi: createUmi("http://api.devnet.solana.com").use(
     signerIdentity(
       createNoopSigner(publicKey("11111111111111111111111111111111"))
     )
   ),
   signer: undefined,
   updateSigner: (signer) => {
-    console.log("updateSigner");
     set(() => ({ signer: createSignerFromWalletAdapter(signer) }));
   },
 }));
