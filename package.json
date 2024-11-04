@@ -19,7 +19,7 @@
     "@solana/wallet-adapter-react-ui": "^0.9.35",
     "@solana/wallet-adapter-wallets": "^0.19.32",
     "@solana/web3.js": "^1.95.2",
-    "next": "14.2.5",
+    "next": "^14.2.16",
     "next-themes": "^0.3.0",
     "npm": "^10.8.2",
     "react": "^18",
