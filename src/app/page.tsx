@@ -1,10 +1,38 @@
+"use client";
+
+import { useState } from "react";
 import MetaplexLogo from "@/assets/logos/metaplex-logo.png";
 import Header from "@/components/header";
+import MintButton from "@/components/MintButton";
+import Supply from "@/components/Supply";
+import NftPreviewByAddress from "@/components/NftPreviewByAddress";
+import MetaMartianGallery from "@/components/MetaMartianGallery";
 
 export default function Home() {
+  const [lastMintedNft, setLastMintedNft] = useState<string | null>(null);
+  const [supplyRefresh, setSupplyRefresh] = useState<number>(0);
   return (
     <main className="flex min-h-screen flex-col items-center justify-between p-24">
       <Header />
+
+      <div className="flex flex-col items-center gap-4">
+        <Supply refreshTrigger={supplyRefresh} />
+        <MintButton onMintSuccess={(mintAddress) => {
+          setLastMintedNft(mintAddress);
+          setSupplyRefresh(prev => prev + 1);
+        }} />
+        {lastMintedNft && (
+          <div className="mt-4 p-4 border rounded-lg dark:border-neutral-800">
+            <h3 className="text-sm font-medium mb-2 text-center">Your MetaMartian!</h3>
+            <NftPreviewByAddress address={lastMintedNft} />
+          </div>
+        )}
+        
+        {/* MetaMartian Gallery */}
+        <div className="mt-8 w-full max-w-4xl">
+          <MetaMartianGallery pageSize={12} />
+        </div>
+      </div>
 
       <div className="relative z-[-1] flex place-items-center ">
         <img

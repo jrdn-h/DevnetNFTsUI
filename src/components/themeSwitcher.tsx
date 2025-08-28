@@ -1,30 +1,31 @@
 "use client";
 
-import { MoonIcon, SunIcon } from "@heroicons/react/24/outline";
+import { useEffect, useState } from "react";
 import { useTheme } from "next-themes";
+import { SunIcon, MoonIcon } from "@heroicons/react/24/outline";
 
-const ThemeSwitcher = () => {
-  const { theme, setTheme } = useTheme();
+export default function ThemeSwitcher() {
+  const { resolvedTheme, setTheme } = useTheme();
+  const [mounted, setMounted] = useState(false);
 
-  let currentTheme = theme;
+  // Prevent server/client SVG mismatch by waiting until mount
+  useEffect(() => setMounted(true), []);
 
-  if (theme === "system") {
-    currentTheme =
-      typeof window !== "undefined" &&
-      window.matchMedia("(prefers-color-scheme: dark)").matches
-        ? "dark"
-        : "light";
+  if (!mounted) {
+    // keep layout stable during hydration
+    return <div className="h-9 w-9 rounded-lg" aria-hidden />;
   }
 
-  return (
-    <div className="cursor-pointer bg-background text-primary-green border border-b border-gray-300 p-3 rounded-lg h-full self-center  dark:border-neutral-800 dark:bg-zinc-800/30 dark:from-inherit lg:static lg:w-auto  lg:rounded-xl lg:border lg:bg-gray-200 lg:dark:bg-zinc-800/30">
-      {currentTheme === "light" ? (
-        <MoonIcon height={24} width={24} onClick={() => setTheme("dark")} />
-      ) : (
-        <SunIcon height={24} width={24} onClick={() => setTheme("light")} />
-      )}
-    </div>
-  );
-};
+  const isDark = resolvedTheme === "dark";
 
-export default ThemeSwitcher;
+  return (
+    <button
+      type="button"
+      aria-label="Toggle theme"
+      onClick={() => setTheme(isDark ? "light" : "dark")}
+      className="cursor-pointer bg-background text-primary-green border border-gray-300 p-3 rounded-lg h-full self-center dark:border-neutral-800 dark:bg-zinc-800/30 lg:static lg:w-auto lg:rounded-xl lg:border lg:bg-gray-200 lg:dark:bg-zinc-800/30"
+    >
+      {isDark ? <SunIcon className="h-6 w-6" /> : <MoonIcon className="h-6 w-6" />}
+    </button>
+  );
+}

@@ -1,8 +1,9 @@
+import "@solana/wallet-adapter-react-ui/styles.css";
+import "./globals.css";
+import { Inter } from "next/font/google";
+import type { Metadata } from "next";
 import { ThemeProviderWrapper } from "@/providers/themeProvider";
 import { WalletAdapterProvider } from "@/providers/walletAdapterProvider";
-import type { Metadata } from "next";
-import { Inter } from "next/font/google";
-import "./globals.css";
 import { UmiProvider } from "@/providers/umiProvider";
 
 const inter = Inter({ subsets: ["latin"] });
@@ -14,18 +15,16 @@ export const metadata: Metadata = {
 
 export default function RootLayout({
   children,
-}: Readonly<{
-  children: React.ReactNode;
-}>) {
+}: Readonly<{ children: React.ReactNode }>) {
   return (
-    <WalletAdapterProvider>
-      <UmiProvider>
-        <html lang="en">
-          <body className={inter.className}>
+    <html lang="en" suppressHydrationWarning>
+      <body className={inter.className}>
+        <WalletAdapterProvider>
+          <UmiProvider>
             <ThemeProviderWrapper>{children}</ThemeProviderWrapper>
-          </body>
-        </html>
-      </UmiProvider>
-    </WalletAdapterProvider>
+          </UmiProvider>
+        </WalletAdapterProvider>
+      </body>
+    </html>
   );
 }

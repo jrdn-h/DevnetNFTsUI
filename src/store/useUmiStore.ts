@@ -1,39 +1,55 @@
+// src/store/useUmiStore.ts
+"use client";
+
+import { create } from "zustand";
+import type { WalletAdapter } from "@solana/wallet-adapter-base";
 import {
-  Signer,
   Umi,
+  Signer,
   createNoopSigner,
-  createNullSigner,
   publicKey,
   signerIdentity,
 } from "@metaplex-foundation/umi";
 import { createUmi } from "@metaplex-foundation/umi-bundle-defaults";
 import { createSignerFromWalletAdapter } from "@metaplex-foundation/umi-signer-wallet-adapters";
-import { WalletAdapter } from "@solana/wallet-adapter-base";
-import { create } from "zustand";
+
+// ✅ Only these two plugins are needed
+import { mplCandyMachine } from "@metaplex-foundation/mpl-candy-machine";
+import { mplTokenMetadata } from "@metaplex-foundation/mpl-token-metadata";
 
 interface UmiState {
   umi: Umi;
-  signer: Signer | undefined;
-  updateSigner: (signer: WalletAdapter) => void;
+  signer: Signer | null;
+  updateSigner: (wallet: WalletAdapter) => void;
 }
 
-const useUmiStore = create<UmiState>()((set, get) => ({
-  // Replace URI with either hardcode, a const variable, or .env value
-  umi: createUmi("http://api.devnet.solana.com").use(
+const endpoint =
+  (process.env.NEXT_PUBLIC_RPC_URL || "").trim() ||
+  "https://api.devnet.solana.com";
+
+// Base Umi with CM + Token Metadata registered, plus a no-op signer for reads
+const baseUmi = createUmi(endpoint)
+  .use(mplTokenMetadata())
+  .use(mplCandyMachine())
+  .use(
     signerIdentity(
       createNoopSigner(publicKey("11111111111111111111111111111111"))
     )
-  ),
-  signer: undefined,
-  updateSigner: (signer) => {
-    const currentSigner = get().signer;
-    const newSigner = createSignerFromWalletAdapter(signer);
+  );
 
-    if (
-      !currentSigner ||
-      currentSigner.publicKey.toString() !== newSigner.publicKey.toString()
-    ) {
-      set(() => ({ signer: newSigner }));
+const useUmiStore = create<UmiState>()((set, get) => ({
+  umi: baseUmi,
+  signer: null,
+  updateSigner: (wallet) => {
+    try {
+      const newSigner = createSignerFromWalletAdapter(wallet);
+      const current = get().signer;
+      if (!current || current.publicKey.toString() !== newSigner.publicKey.toString()) {
+        set({ signer: newSigner });
+      }
+    } catch (e) {
+      console.error("[useUmiStore] updateSigner error:", e);
+      set({ signer: null });
     }
   },
 }));
