@@ -6,17 +6,10 @@ type Attribute = { trait_type?: string; value?: unknown };
 type RarityIndex = {
   total: number;
   traits: Record<string, Record<string, number>>;
-  avgTraitScoreByType?: Record<string, number>;
-  overall?: {
-    avgObserved?: number;
-    minObserved?: number;
-    maxObserved?: number;
-    avgTheoretical?: number;
-    minTheoretical?: number;
-    maxTheoretical?: number;
-  };
+  overall?: { avgObserved: number; minObserved: number; maxObserved: number };
+  traitAvg?: Record<string, number>;
 };
-type TraitStat = { traitType: string; value: string; pct?: number; score?: number };
+type TraitStat = { traitType: string; value: string; pct?: number; score?: number; count?: number };
 
 type Props = {
   open: boolean;
@@ -30,6 +23,8 @@ type Props = {
   rarityIndexUrlOverride?: string;
   /** Optional explicit title override */
   title?: string;
+  rarityIndexSnapshot?: RarityIndex;
+  yourScore?: number;
 };
 
 export default function MetaMartianRevealModal({
@@ -43,6 +38,8 @@ export default function MetaMartianRevealModal({
   attributes,
   rarityIndexUrlOverride,
   title,
+  rarityIndexSnapshot,
+  yourScore,
 }: Props) {
   const [traitStats, setTraitStats] = useState<TraitStat[]>([]);
   const [yourOverall, setYourOverall] = useState<number | null>(null);
@@ -102,6 +99,31 @@ export default function MetaMartianRevealModal({
         return;
       }
 
+      // Use snapshot if provided
+      if (rarityIndexSnapshot) {
+        const total = Math.max(1, Number(rarityIndexSnapshot.total || 0));
+        const attrs = Array.isArray(attributes) ? attributes : [];
+        const stats = attrs.map((a) => {
+          const traitType = (a?.trait_type ?? "—").toString().trim() || "—";
+          const value = a?.value == null || a?.value === "" ? "None" : (typeof a.value === "object" ? JSON.stringify(a.value) : String(a.value));
+          const count = rarityIndexSnapshot.traits?.[traitType]?.[value] ?? 0;
+          const safe = Math.max(1, count);
+          const pct = (safe / total) * 100;
+          const score = total / safe;
+          return { traitType, value, pct, score, count };
+        });
+        const yourSum = typeof yourScore === "number" ? yourScore
+          : stats.reduce((s, t) => s + (t.score ?? 0), 0);
+
+        setTraitStats(stats);
+        setYourOverall(Number.isFinite(yourSum) ? yourSum : null);
+        setAvgOverall(rarityIndexSnapshot.overall?.avgObserved ?? null);
+        setMinOverall(rarityIndexSnapshot.overall?.minObserved ?? null);
+        setMaxOverall(rarityIndexSnapshot.overall?.maxObserved ?? null);
+        setLoadingRarity(false);
+        return; // ✅ Use snapshot and skip network work
+      }
+
       setLoadingRarity(true);
       setRarityErr(null);
       try {
@@ -128,7 +150,7 @@ export default function MetaMartianRevealModal({
           const safe = Math.max(1, Number(count));
           const pct = (safe / total) * 100;
           const score = total / safe; // same as 100/pct
-          return { traitType, value, pct, score };
+          return { traitType, value, pct, score, count };
         });
 
         // your overall (sum of your trait scores where available)
@@ -141,7 +163,7 @@ export default function MetaMartianRevealModal({
           const minObs = index.overall?.minObserved ?? null;
           const maxObs = index.overall?.maxObserved ?? null;
 
-          let avgByType = index.avgTraitScoreByType ?? {};
+          let avgByType = index.traitAvg ?? {};
           if (!avgByType || Object.keys(avgByType).length === 0) {
             // fallback: #distinct values per trait type
             const tmp: Record<string, number> = {};
@@ -152,9 +174,9 @@ export default function MetaMartianRevealModal({
           }
 
           if (!cancelled) {
-            setAvgOverall(avgObs ?? index.overall?.avgTheoretical ?? null);
-            setMinOverall(minObs ?? index.overall?.minTheoretical ?? null);
-            setMaxOverall(maxObs ?? index.overall?.maxTheoretical ?? null);
+            setAvgOverall(avgObs ?? null);
+            setMinOverall(minObs ?? null);
+            setMaxOverall(maxObs ?? null);
             setAvgTraitScoreByType(avgByType);
           }
         } else {
@@ -175,7 +197,7 @@ export default function MetaMartianRevealModal({
     }
     run();
     return () => { cancelled = true; };
-  }, [open, attributes, rarityIndexUrl]);
+  }, [open, attributes, rarityIndexUrl, rarityIndexSnapshot, yourScore]);
 
   if (!open) return null;
 
@@ -215,28 +237,24 @@ export default function MetaMartianRevealModal({
         {/* Content */}
         <div className="mm-scroll max-h-[92svh] overflow-y-auto px-5 pb-6">
           <div className="mt-4 grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.2fr)]">
-            {/* IMAGE WELL */}
+            {/* IMAGE */}
             <div className="w-full">
-              <div className="relative aspect-square w-full overflow-hidden rounded-2xl ring-1 ring-black/10 dark:ring-white/10">
-                <div className="absolute inset-0 bg-gradient-to-br from-zinc-100 via-zinc-50 to-zinc-200 dark:from-zinc-900 dark:via-zinc-950 dark:to-black" />
-                <div className="absolute inset-0 p-2">
-                  <div className="relative h-full w-full overflow-hidden rounded-xl bg-white/50 dark:bg-black/30">
-                    {image ? (
-                      // eslint-disable-next-line @next/next/no-img-element
-                      <img
-                        src={image}
-                        alt={name}
-                        className="absolute inset-0 h-full w-full object-contain"
-                        draggable={false}
-                      />
-                    ) : (
-                      <div className="grid h-full w-full place-items-center text-sm opacity-60">
-                        No image found
-                      </div>
-                    )}
-                    <div className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-black/10 dark:ring-white/10" />
+              <div className="relative aspect-square w-full overflow-hidden rounded-3xl border border-black/10 bg-white dark:border-white/10 dark:bg-zinc-900">
+                {/* eslint-disable-next-line @next/next/no-img-element */}
+                {image ? (
+                  <img
+                    src={image}
+                    alt={name}
+                    className="block h-full w-full object-contain"
+                    draggable={false}
+                    style={{ imageRendering: "pixelated" }} // keeps 8-bit art crisp
+                  />
+                ) : (
+                  <div className="grid h-full w-full place-items-center text-sm opacity-60">
+                    No image found
                   </div>
-                </div>
+                )}
+                <div className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-black/5 dark:ring-white/5" />
               </div>
 
               <div className="mt-3 text-center">
@@ -285,7 +303,7 @@ export default function MetaMartianRevealModal({
                 <div className="rounded-xl border p-3 dark:border-white/10">
                   <div className="text-xs opacity-70">Your Overall Score</div>
                   <div className="text-lg font-semibold">
-                    {yourOverall != null ? nice(yourOverall, 2) : "—"}
+                    {yourOverall != null ? nice(yourOverall, 0) : "—"}
                   </div>
                   <div className="text-[11px] opacity-60">
                     Sum of your trait scores. Higher is rarer.
@@ -294,7 +312,7 @@ export default function MetaMartianRevealModal({
                 <div className="rounded-xl border p-3 dark:border-white/10">
                   <div className="text-xs opacity-70">Average Overall</div>
                   <div className="text-lg font-semibold">
-                    {avgOverall != null ? nice(avgOverall, 2) : "—"}
+                    {avgOverall != null ? nice(avgOverall, 0) : "—"}
                   </div>
                   <div className="text-[11px] opacity-60">
                     Collection average overall score (observed).
@@ -303,8 +321,8 @@ export default function MetaMartianRevealModal({
                 <div className="rounded-xl border p-3 dark:border-white/10">
                   <div className="text-xs opacity-70">Highest / Lowest (observed)</div>
                   <div className="text-lg font-semibold">
-                    {maxOverall != null ? nice(maxOverall, 2) : "—"} /{" "}
-                    {minOverall != null ? nice(minOverall, 2) : "—"}
+                    {maxOverall != null ? nice(maxOverall, 0) : "—"} /{" "}
+                    {minOverall != null ? nice(minOverall, 0) : "—"}
                   </div>
                   <div className="text-[11px] opacity-60">
                     Computed from cache across minted items.
@@ -339,13 +357,8 @@ export default function MetaMartianRevealModal({
                       />
                     </div>
                     <div className="mt-1 flex flex-wrap items-center justify-between text-[11px] opacity-70">
-                      <span>Score: {t.score != null ? nice(t.score, 2) : "—"}</span>
-                      <span>
-                        Avg Score (collection):{" "}
-                        {avgTraitScoreByType[t.traitType] != null
-                          ? nice(avgTraitScoreByType[t.traitType], 0)
-                          : "—"}
-                      </span>
+                      <span>Count in collection: {t.count != null ? Math.round(t.count).toLocaleString() : "—"}</span>
+                      <span>Score: {t.score != null ? Math.round(t.score).toLocaleString() : "—"}</span>
                     </div>
                   </div>
                 ))}

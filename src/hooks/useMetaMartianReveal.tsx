@@ -11,6 +11,13 @@ import MetaMartianRevealModal from "@/components/MetaMartianRevealModal";
 
 type Attr = { trait_type?: string; value?: unknown };
 
+type RarityIndex = {
+  total: number;
+  traits: Record<string, Record<string, number>>;
+  overall?: { avgObserved: number; minObserved: number; maxObserved: number };
+  traitAvg?: Record<string, number>;
+};
+
 type Last = {
   name?: string;
   image?: string;
@@ -18,6 +25,8 @@ type Last = {
   txSig?: string | null;
   attributes?: Attr[];
   collectionMint?: string;
+  rarityIndexSnapshot?: RarityIndex;
+  yourScore?: number;
 };
 
 const TOKEN_METADATA_PROGRAM_ID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"; // Metaplex Token Metadata
@@ -157,6 +166,8 @@ export default function useMetaMartianReveal() {
         txSig={last?.txSig ?? null}
         collectionMint={last?.collectionMint}
         attributes={last?.attributes}
+        rarityIndexSnapshot={last?.rarityIndexSnapshot}
+        yourScore={last?.yourScore}
       />
     ),
     [open, close, last]
