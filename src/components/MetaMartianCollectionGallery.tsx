@@ -1,32 +1,14 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
-import { useWallet } from "@solana/wallet-adapter-react";
+
 import useMetaMartianReveal from "@/hooks/useMetaMartianReveal";
-import umiWithCurrentWalletAdapter from "@/lib/umi/umiWithCurrentWalletAdapter";
-import { refreshMintedCacheOnce, getMintedSetFromCache } from "@/lib/mintedCache";
-import { motion } from "framer-motion";
+import { refreshMintedCacheOnce } from "@/lib/mintedCache";
+import { useCollectionDB, type CollectionDB } from "@/store/useCollectionDB";
 
-type Attr = { trait_type?: string; value?: any };
-type Item = {
-  index: string;
-  name: string;
-  image: string;
-  metadata: string;
-  attributes?: Attr[];
-  minted?: boolean;
-};
-type Catalog = { collectionMint: string; total: number; items: Item[] };
-type RarityIndex = {
-  total: number;
-  traits: Record<string, Record<string, number>>;
-  overall?: { avgObserved: number; minObserved: number; maxObserved: number };
-  traitAvg?: Record<string, number>;
-};
-type SortKey =
-  | "num-asc" | "num-desc"
-  | "rarity-asc" | "rarity-desc";
+type SortKey = "num-asc" | "num-desc" | "rarity-asc" | "rarity-desc";
 
+// trait normalization (used in filters)
 const normType = (x: any) => {
   const s = (x ?? "—").toString().trim();
   return s.length ? s : "—";
@@ -38,93 +20,23 @@ const normVal = (v: any) =>
     ? JSON.stringify(v)
     : String(v);
 
-// normalize any minted shape (boolean | "true"/"false" | 1/0)
-const isMintedFlag = (v: any) => v === true || v === "true" || v === 1;
-
-function scoreFromAttrs(attrs: Attr[], idx: RarityIndex): number {
-  const total = Math.max(1, idx.total);
-  let sum = 0;
-  for (const tt of Object.keys(idx.traits || {})) {
-    const a = attrs.find((x) => normType(x?.trait_type) === tt);
-    const val = a ? normVal(a.value) : "None";
-    const c = idx.traits[tt]?.[val] ?? 0;
-    sum += total / Math.max(1, c);
-  }
-  return sum;
-}
-function buildCountsFromAttrMap(attrMap: Map<string, Attr[]>): RarityIndex {
-  const traits: Record<string, Record<string, number>> = {};
-  const present: Record<string, number> = {};
-  let total = 0;
-  for (const [, attrs] of Array.from(attrMap)) {
-    total++;
-    const seen = new Set<string>();
-    for (const a of attrs || []) {
-      const tt = normType(a?.trait_type);
-      const v = normVal(a?.value);
-      traits[tt] ||= {};
-      traits[tt][v] = (traits[tt][v] || 0) + 1;
-      if (!seen.has(tt)) {
-        present[tt] = (present[tt] || 0) + 1;
-        seen.add(tt);
-      }
-    }
-  }
-  for (const tt of Object.keys(traits)) {
-    const missing = Math.max(0, total - (present[tt] || 0));
-    if (missing > 0) traits[tt]["None"] = (traits[tt]["None"] || 0) + missing;
-  }
-  return { total, traits };
-}
-async function hydrateAllAttrs(items: Item[], attrMap: Map<string, Attr[]>, limit = 16) {
-  let i = 0;
-  async function worker() {
-    while (i < items.length) {
-      const idx = i++;
-      const it = items[idx];
-      if (attrMap.has(it.index)) continue;
-      try {
-        const attrs = Array.isArray(it.attributes)
-          ? it.attributes
-          : (await (await fetch(it.metadata, { cache: "no-store" })).json())?.attributes || [];
-        attrMap.set(it.index, attrs);
-      } catch {
-        attrMap.set(it.index, []);
-      }
-    }
-  }
-  await Promise.all(Array.from({ length: Math.min(limit, Math.max(1, items.length)) }, worker));
-}
-
 export default function MetaMartianCollectionGallery({
   pageStep = 60,
   initialVisible = 120,
   collectionMint: propMint,
-  catalogUrlOverride,
 }: {
   pageStep?: number;
   initialVisible?: number;
   collectionMint?: string;
-  catalogUrlOverride?: string;
 }) {
   const { Modal, openWithData } = useMetaMartianReveal();
-  const { publicKey: walletPk } = useWallet();
 
   const RPC = process.env.NEXT_PUBLIC_RPC_URL || "https://api.devnet.solana.com";
 
   const [resolvedMint, setResolvedMint] = useState<string | undefined>(
     propMint || process.env.NEXT_PUBLIC_COLLECTION_MINT
   );
-  const [catalog, setCatalog] = useState<Catalog | null>(null);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const [mintedSet, setMintedSet] = useState<Set<string>>(new Set());
-
-  const attrMapRef = useRef<Map<string, Attr[]>>(new Map());
-  const [attrReady, setAttrReady] = useState(false);
-
-  const [rarityIndex, setRarityIndex] = useState<RarityIndex | null>(null);
-  const [rarityScoreByIndex, setRarityScoreByIndex] = useState<Map<string, number>>(new Map());
 
   const [visible, setVisible] = useState(initialVisible);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
@@ -133,16 +45,17 @@ export default function MetaMartianCollectionGallery({
 
   const [minterFilter, setMinterFilter] = useState<"all" | "minted" | "unminted">("all");
   const [sortKey, setSortKey] = useState<SortKey>("num-asc");
-
   const [selectedTraits, setSelectedTraits] = useState<Record<string, Set<string>>>({});
 
-  // For smooth modal opening
-  const [pending, startTransition] = useTransition();
+  const [, startTransition] = useTransition();
 
-  // Reduced motion support
-  const prefersReduced = typeof window !== "undefined" &&
-    window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+  // DB store
+  const db = useCollectionDB((s) => s.db);
+  const loadDB = useCollectionDB((s) => s.load);
+  const dbLoading = useCollectionDB((s) => s.loading);
+  const dbError = useCollectionDB((s) => s.error);
 
+  // Resolve collection mint from CM on-chain if not provided
   useEffect(() => {
     (async () => {
       if (resolvedMint) return;
@@ -159,180 +72,54 @@ export default function MetaMartianCollectionGallery({
         const cm = await fetchCandyMachine(u, publicKey(CM));
         setResolvedMint(cm.collectionMint.toString());
       } catch {
-        setError("Could not resolve collection mint. Set NEXT_PUBLIC_COLLECTION_MINT or pass collectionMint prop.");
+        // ignore; fallback to env or prop
       }
     })();
   }, [resolvedMint]);
 
-  const manifestUrl = useMemo(() => {
-    if (catalogUrlOverride) return catalogUrlOverride;
-    if (!resolvedMint) return undefined;
-    return `/collection/${resolvedMint}-catalog.local.json`;
-  }, [catalogUrlOverride, resolvedMint]);
+  // Load DB when collection mint is ready
+  useEffect(() => {
+    if (resolvedMint) loadDB(resolvedMint);
+  }, [resolvedMint, loadDB]);
 
+  // Refresh minted list from RPC (DAS)
   useEffect(() => {
     let cancelled = false;
     (async () => {
-      if (!manifestUrl) return;
-      setLoading(true);
-      setError(null);
-      setAttrReady(false);
-      try {
-        let res = await fetch(manifestUrl, { cache: "no-store" });
-        if (!res.ok) {
-          const fallback = manifestUrl.replace("-catalog.local.json", "-catalog.json");
-          const r2 = await fetch(fallback, { cache: "no-store" }).catch(() => null);
-          if (!r2 || !r2.ok) throw new Error("Manifest not found");
-          res = r2;
-        }
-        const json = (await res.json()) as Catalog;
-        if (cancelled) return;
-        
-        const normalizedItems = (json.items || []).map((it: any) => ({
-          ...it,
-          minted: isMintedFlag(it.minted),
-        }));
-        setCatalog({ ...json, items: normalizedItems });
-        
-        // Prime from local cache immediately
-        const initialSet = getMintedSetFromCache(json.collectionMint);
-        setMintedSet(initialSet);
-        
-        // Reflect into items so filters work before network refresh
-        setCatalog((prev) =>
-          !prev
-            ? prev
-            : {
-                ...prev,
-                items: prev.items.map((it) => ({
-                  ...it,
-                  minted: initialSet.has(it.index),
-                })),
-              }
-        );
-        
-        setVisible(initialVisible);
-        setHighlight(null);
-      } catch (e: any) {
-        if (cancelled) return;
-        setCatalog(null);
-        setError(e?.message ?? "Failed to load collection manifest");
-      } finally {
-        if (!cancelled) setLoading(false);
-      }
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [manifestUrl, initialVisible]);
-
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!catalog) return;
-      const map = attrMapRef.current;
-      await hydrateAllAttrs(catalog.items, map, 16);
-      if (cancelled) return;
-
-      const idx = buildCountsFromAttrMap(map);
-      
-      // Compute per-item scores to derive collection avg/min/max
-      const scoresAll = catalog.items.map((it) =>
-        scoreFromAttrs(map.get(it.index) || [], idx)
-      );
-      if (scoresAll.length) {
-        const sum = scoresAll.reduce((a, b) => a + b, 0);
-        idx.overall = {
-          avgObserved: sum / scoresAll.length,
-          minObserved: Math.min(...scoresAll),
-          maxObserved: Math.max(...scoresAll),
-        };
-      }
-
-      // Compute per-trait average score across values (unweighted mean of total/freq)
-      const traitAvg: Record<string, number> = {};
-      for (const tt of Object.keys(idx.traits)) {
-        const counts = Object.values(idx.traits[tt]);
-        if (counts.length) {
-          const mean = counts.reduce((acc, c) => acc + idx.total / Math.max(1, c), 0) / counts.length;
-          traitAvg[tt] = mean;
-        }
-      }
-      idx.traitAvg = traitAvg;
-      
-      setRarityIndex(idx);
-
-      const scoreMap = new Map<string, number>();
-      for (const it of catalog.items) {
-        const attrs = map.get(it.index) || [];
-        scoreMap.set(it.index, scoreFromAttrs(attrs, idx));
-      }
-      setRarityScoreByIndex(scoreMap);
-      setAttrReady(true);
-    })();
-    return () => {
-      cancelled = true;
-    };
-  }, [catalog]);
-
-  // Refresh minted cache from RPC (DAS)
-  useEffect(() => {
-    let cancelled = false;
-    (async () => {
-      if (!catalog?.collectionMint) return;
-
-      // Pull fresh minted list from RPC (DAS). No-op if RPC doesn't support it.
+      if (!db?.collectionMint) return;
       const freshSet = await refreshMintedCacheOnce({
         rpcUrl: RPC,
-        collectionMint: catalog.collectionMint,
+        collectionMint: db.collectionMint,
       });
-      if (cancelled) return;
-
-      setMintedSet(freshSet);
-      // reflect on items
-      setCatalog((prev) =>
-        !prev
-          ? prev
-          : {
-              ...prev,
-              items: prev.items.map((it) => ({
-                ...it,
-                minted: freshSet.has(it.index),
-              })),
-            }
-      );
+      if (!cancelled) setMintedSet(freshSet);
     })();
     return () => {
       cancelled = true;
     };
-  }, [catalog?.collectionMint, RPC]);
+  }, [db?.collectionMint, RPC]);
 
-  const traitTypes = useMemo(() => {
-    return rarityIndex ? Object.keys(rarityIndex.traits || {}).sort() : [];
-  }, [rarityIndex]);
+  const traitTypes = useMemo(() => (db ? Object.keys(db.traits || {}).sort() : []), [db]);
 
   const traitValuesByType = useMemo(() => {
     const map: Record<string, string[]> = {};
-    if (!rarityIndex) return map;
-    for (const tt of Object.keys(rarityIndex.traits)) {
-      map[tt] = Object.keys(rarityIndex.traits[tt]).sort();
+    if (!db) return map;
+    for (const tt of Object.keys(db.traits)) {
+      map[tt] = Object.keys(db.traits[tt]).sort();
     }
     return map;
-  }, [rarityIndex]);
+  }, [db]);
 
-  // Compute counts (minted / not minted) for the currently filtered-by-traits set
+  // Minted/not-minted counts for current trait-filtered set
   const { mintedCount, unmintedCount } = useMemo(() => {
-    const items = catalog?.items ?? [];
+    const items = db?.items ?? [];
     const active = Object.keys(selectedTraits);
 
-    // Apply ONLY the trait filters here (not the minted dropdown)
     let base = items;
     if (active.length > 0) {
       base = base.filter((it) => {
-        const attrs = attrMapRef.current.get(it.index) || [];
         for (const tt of active) {
           const allowed = selectedTraits[tt];
-          const found = attrs.find((a) => normType(a?.trait_type) === tt);
+          const found = it.attributes?.find((a) => normType(a?.trait_type) === tt);
           const val = found ? normVal(found.value) : "None";
           if (!allowed.has(val)) return false;
         }
@@ -341,15 +128,10 @@ export default function MetaMartianCollectionGallery({
     }
 
     let minted = 0;
-    for (const it of base) {
-      if (mintedSet.has(it.index)) minted++;
-    }
+    for (const it of base) if (mintedSet.has(it.index)) minted++;
     const unminted = Math.max(0, base.length - minted);
-
     return { mintedCount: minted, unmintedCount: unminted };
-  }, [catalog?.items, selectedTraits, mintedSet]);
-
-
+  }, [db?.items, selectedTraits, mintedSet]);
 
   const toggleTraitValue = (tt: string, val: string) => {
     setSelectedTraits((prev) => {
@@ -363,23 +145,22 @@ export default function MetaMartianCollectionGallery({
   };
   const clearAllTraits = () => setSelectedTraits({});
 
+  // Filter + sort view
   const filteredSorted = useMemo(() => {
-    let arr: Item[] = catalog?.items ?? [];
+    let arr: CollectionDB["items"] = db?.items ?? [];
 
-     if (minterFilter === "minted") {
-       arr = arr.filter((it) => mintedSet.has(it.index));
-     } else if (minterFilter === "unminted") {
-       arr = arr.filter((it) => !mintedSet.has(it.index));
-     }
-
+    if (minterFilter === "minted") {
+      arr = arr.filter((it) => mintedSet.has(it.index));
+    } else if (minterFilter === "unminted") {
+      arr = arr.filter((it) => !mintedSet.has(it.index));
+    }
 
     const active = Object.keys(selectedTraits);
     if (active.length > 0) {
       arr = arr.filter((it) => {
-        const attrs = attrMapRef.current.get(it.index) || [];
         for (const tt of active) {
           const allowed = selectedTraits[tt];
-          const found = attrs.find((a) => normType(a?.trait_type) === tt);
+          const found = it.attributes?.find((a) => normType(a?.trait_type) === tt);
           const val = found ? normVal(found.value) : "None";
           if (!allowed.has(val)) return false;
         }
@@ -387,34 +168,45 @@ export default function MetaMartianCollectionGallery({
       });
     }
 
-    const byNum = (a: Item, b: Item) => Number(a.index) - Number(b.index);
-
-
-    const byRarity = (dir: "asc" | "desc") => (a: Item, b: Item) => {
-      const ra = rarityScoreByIndex.get(a.index) ?? 0;
-      const rb = rarityScoreByIndex.get(b.index) ?? 0;
-      return dir === "asc" ? ra - rb : rb - ra;
-    };
-
-    const arr2 = [...arr];
+    const out = [...arr];
     switch (sortKey) {
       case "num-asc":
-        arr2.sort(byNum);
+        out.sort((a, b) => Number(a.index) - Number(b.index));
         break;
       case "num-desc":
-        arr2.sort((a, b) => byNum(b, a));
+        out.sort((a, b) => Number(b.index) - Number(a.index));
         break;
       case "rarity-asc":
-        arr2.sort(byRarity("asc"));
+        out.sort((a, b) => a.score - b.score);
         break;
       case "rarity-desc":
-        arr2.sort(byRarity("desc"));
+        out.sort((a, b) => b.score - a.score);
         break;
-      
     }
-    return arr2;
-  }, [catalog, minterFilter, sortKey, selectedTraits, rarityScoreByIndex, mintedSet]);
+    return out;
+  }, [db?.items, minterFilter, sortKey, selectedTraits, mintedSet]);
 
+  // Fast index → position lookup in the current filtered+sorted view
+  const posByIndex = useMemo(() => {
+    const m = new Map<string, number>();
+    filteredSorted.forEach((x, i) => m.set(x.index, i));
+    return m;
+  }, [filteredSorted]);
+
+  // Prebuild the exact items shape the modal expects (once per filteredSorted change)
+  const modalItems = useMemo(() => {
+    return filteredSorted.map((x) => ({
+      name: x.name,
+      image: x.image,
+      metadataUri: x.metadata,
+      indexKey: x.index,
+      attributes: x.attributes,
+      score: x.score,
+      rank: x.rank,
+    }));
+  }, [filteredSorted]);
+
+  // Infinite scroll growth
   useEffect(() => {
     if (!sentinelRef.current) return;
     const el = sentinelRef.current;
@@ -428,48 +220,46 @@ export default function MetaMartianCollectionGallery({
     return () => obs.unobserve(el);
   }, [pageStep, filteredSorted.length]);
 
-     const onSearch = useCallback(() => {
-     const nHuman = Number(searchNum.trim());
-     if (!catalog || !Number.isFinite(nHuman)) return;
-     const nZero = Math.max(0, nHuman - 1);
-     const i = filteredSorted.findIndex((it) => Number(it.index) === nZero);
-    if (i >= 0) {
-      setVisible((v) => Math.max(v, i + 24));
-      const item = filteredSorted[i];
-      setTimeout(() => {
-        const el = document.getElementById(`mm-item-${item.index}`);
-        if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-        setHighlight(item.index);
-        setTimeout(() => setHighlight(null), 1600);
-        const attrs = attrMapRef.current.get(item.index) || [];
-        // Calculate true rarity rank by finding position in rarity-sorted list
-        const itemRank = filteredSorted.length > 0 ? (() => {
-          const raritySorted = [...filteredSorted].sort((a, b) => {
-            const ra = rarityScoreByIndex.get(a.index) ?? 0;
-            const rb = rarityScoreByIndex.get(b.index) ?? 0;
-            return rb - ra; // desc order: higher score = lower rank number
-          });
-          return raritySorted.findIndex(it => it.index === item.index) + 1;
-        })() : undefined;
-        // Freeze a lightweight, filter-respecting snapshot: name/image/metadata/indexKey only
-        const itemsForModal = filteredSorted.map((x) => ({
-          name: x.name,
-          image: x.image,
-          metadataUri: x.metadata,   // reveal.tsx fetches attrs lazily
-          indexKey: x.index,         // stable key for caching
-        }));
+  // Find-by-number
+  // Find-by-number (O(1) lookup)
+  const onSearch = useCallback(() => {
+    const nHuman = Number(searchNum.trim());
+    if (!db || !Number.isFinite(nHuman)) return;
 
-        openWithData({
-          items: itemsForModal,
-          initialIndex: Math.max(0, i),
-          title: "MetaMartian details",
-          collectionMint: catalog.collectionMint,
-          // ✅ pass the snapshot so counts/percentages are correct
-          rarityIndexSnapshot: rarityIndex || undefined,
-        });
-      }, 40);
-    }
-  }, [searchNum, filteredSorted, catalog, openWithData]);
+    const nZero = Math.max(0, nHuman - 1);
+    const i = posByIndex.get(String(nZero));
+    if (i == null) return;
+
+    // Ensure card is mounted
+    setVisible((v) => Math.max(v, i + Math.max(24, pageStep)));
+
+    const item = filteredSorted[i];
+
+    // Preload hero image (non-blocking)
+    if (item?.image) { const img = new Image(); img.src = item.image; }
+
+    // Open immediately (no heavy mapping here — it's memoized)
+    openWithData({
+      items: modalItems,
+      initialIndex: i,
+      title: "MetaMartian details",
+      collectionMint: db.collectionMint,
+      rarityIndexSnapshot: {
+        total: db.items.length,
+        traits: db.traits,
+        overall: db.overall,
+        traitAvg: db.traitAvg,
+      },
+    });
+
+    // Smoothly scroll the grid in the next frame (doesn't block open)
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`mm-card-${item.index}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+      setHighlight(item.index);
+      setTimeout(() => setHighlight(null), 1200);
+    });
+  }, [searchNum, db, posByIndex, filteredSorted, modalItems, openWithData, pageStep]);
 
   const shown = filteredSorted.slice(0, visible);
 
@@ -480,15 +270,19 @@ export default function MetaMartianCollectionGallery({
       <div className="mb-3">
         <h3 className="text-base font-semibold">
           Entire Collection{" "}
-          {catalog?.collectionMint ? `· ${catalog.collectionMint.slice(0, 4)}…${catalog.collectionMint.slice(-4)}` : ""}
+          {db?.collectionMint ? `· ${db.collectionMint.slice(0, 4)}…${db.collectionMint.slice(-4)}` : ""}
         </h3>
-        <div className="text-xs opacity-70">{loading ? "Loading…" : catalog ? `${catalog.total.toLocaleString()} items` : ""}</div>
+        <div className="text-xs opacity-70">
+          {dbLoading ? "Loading collection data…" : db ? `${db.items.length.toLocaleString()} items` : "Loading…"}
+        </div>
       </div>
 
-      {error && !loading && <div className="mb-4 rounded-xl border p-4 text-sm text-red-600 dark:border-neutral-800">{error}</div>}
+      {dbError && !dbLoading && (
+        <div className="mb-4 rounded-xl border p-4 text-sm text-red-600 dark:border-neutral-800">{dbError}</div>
+      )}
 
-             <div className="grid gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
-        {/* LEFT: Sticky controls */}
+      <div className="grid gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
+        {/* LEFT: controls */}
         <aside className="lg:sticky lg:top-20 h-fit space-y-4 rounded-2xl border p-4 dark:border-neutral-800 bg-white/60 dark:bg-zinc-900/60 backdrop-blur">
           {/* Search by # */}
           <div className="space-y-1">
@@ -499,10 +293,15 @@ export default function MetaMartianCollectionGallery({
                 pattern="[0-9]*"
                 value={searchNum}
                 onChange={(e) => setSearchNum(e.target.value.replace(/\D+/g, ""))}
+                onKeyDown={(e) => e.key === "Enter" && onSearch()}
                 className="h-9 w-28 rounded-lg border px-2 text-sm dark:border-neutral-700"
                 placeholder="e.g. 123"
               />
-              <button onClick={onSearch} className="h-9 rounded-lg border px-3 text-sm dark:border-neutral-700">
+              <button
+                onClick={onSearch}
+                disabled={!searchNum}
+                className="h-9 rounded-lg border px-3 text-sm disabled:opacity-50 dark:border-neutral-700"
+              >
                 Go
               </button>
             </div>
@@ -535,11 +334,10 @@ export default function MetaMartianCollectionGallery({
               <option value="num-desc">Number ↓</option>
               <option value="rarity-desc">Rarity ↑ (rare first)</option>
               <option value="rarity-asc">Rarity ↓ (common first)</option>
-              
             </select>
           </div>
 
-          {/* Multi-trait filters */}
+          {/* Trait filters */}
           <div>
             <div className="mb-2 flex items-center justify-between">
               <div className="text-xs font-medium opacity-70">Filter by traits</div>
@@ -548,7 +346,7 @@ export default function MetaMartianCollectionGallery({
               </button>
             </div>
 
-            {!attrReady && <div className="mb-2 text-[11px] opacity-70">Loading trait data…</div>}
+            {!db && <div className="mb-2 text-[11px] opacity-70">Loading trait data…</div>}
 
             <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">
               {traitTypes.map((tt) => {
@@ -559,13 +357,15 @@ export default function MetaMartianCollectionGallery({
                   <details key={tt} className="group rounded-lg border px-2 py-1 dark:border-neutral-800">
                     <summary className="flex cursor-pointer list-none items-center justify-between py-1">
                       <span className="text-sm">{tt}</span>
-                      <span className="text-[10px] opacity-60">{selectedCount > 0 ? `${selectedCount} selected` : `${values.length}`}</span>
+                      <span className="text-[10px] opacity-60">
+                        {selectedCount > 0 ? `${selectedCount} selected` : `${values.length}`}
+                      </span>
                     </summary>
 
                     <div className="mt-2 grid grid-cols-2 gap-1">
                       {values.map((val) => {
                         const checked = selected.has(val);
-                        const count = rarityIndex?.traits?.[tt]?.[val] ?? 0;
+                        const count = db?.traits?.[tt]?.[val] ?? 0;
                         return (
                           <label
                             key={`${tt}:${val}`}
@@ -580,9 +380,7 @@ export default function MetaMartianCollectionGallery({
                               onChange={() => toggleTraitValue(tt, val)}
                               className="mt-0.5 h-3 w-3"
                             />
-                            <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">
-                              {val}
-                            </span>
+                            <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{val}</span>
                             <span
                               className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] tabular-nums ${
                                 checked
@@ -602,7 +400,9 @@ export default function MetaMartianCollectionGallery({
               })}
             </div>
 
-            <p className="mt-2 text-[11px] opacity-60">Select multiple values per trait (AND across traits, OR within each).</p>
+            <p className="mt-2 text-[11px] opacity-60">
+              Select multiple values per trait (AND across traits, OR within each).
+            </p>
           </div>
         </aside>
 
@@ -612,63 +412,45 @@ export default function MetaMartianCollectionGallery({
             className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5"
             style={{ contentVisibility: "auto", containIntrinsicSize: "800px" }}
           >
-            {loading &&
+            {dbLoading &&
               Array.from({ length: 24 }).map((_, i) => (
                 <div key={i} className="aspect-square animate-pulse rounded-xl bg-neutral-200 dark:bg-neutral-800" />
               ))}
 
-            {!loading &&
-              shown.map((it, index) => {
-                const score = rarityScoreByIndex.get(it.index);
-                // Calculate true rarity rank by finding position in rarity-sorted list
-                const rarityRank = filteredSorted.length > 0 ? (() => {
-                  // Create a rarity-sorted copy of the filtered items
-                  const raritySorted = [...filteredSorted].sort((a, b) => {
-                    const ra = rarityScoreByIndex.get(a.index) ?? 0;
-                    const rb = rarityScoreByIndex.get(b.index) ?? 0;
-                    return rb - ra; // desc order: higher score = lower rank number
-                  });
-                  return raritySorted.findIndex(item => item.index === it.index) + 1;
-                })() : undefined;
+            {!dbLoading &&
+              db &&
+              shown.map((it) => {
+                const isMinted = mintedSet.has(it.index);
                 return (
                   <button
                     key={it.index}
                     id={`mm-card-${it.index}`}
                     onPointerEnter={() => {
-                      // Preload image on hover
                       if (it.image) {
                         const img = new Image();
                         img.src = it.image;
                       }
                     }}
                     onPointerDown={() => {
-                      // Preload image on touch/press
                       if (it.image) {
                         const img = new Image();
                         img.src = it.image;
                       }
                     }}
                     onClick={() => {
-                      // One-tap open without blocking main thread
                       startTransition(() => {
-                        // Freeze a lightweight, filter-respecting snapshot: name/image/metadata/indexKey only
-                        const itemsForModal = filteredSorted.map((x) => ({
-                          name: x.name,
-                          image: x.image,
-                          metadataUri: x.metadata,   // reveal.tsx fetches attrs lazily
-                          indexKey: x.index,         // stable key for caching & shared-element
-                        }));
-
-                        // Find the clicked item's position within that filtered list
-                        const modalIndex = filteredSorted.findIndex((y) => y.index === it.index);
-
+                        const i = posByIndex.get(it.index) ?? 0;
                         openWithData({
-                          items: itemsForModal,
-                          initialIndex: Math.max(0, modalIndex),
+                          items: modalItems,
+                          initialIndex: i,
                           title: "MetaMartian details",
-                          collectionMint: catalog?.collectionMint,
-                          // ✅ pass the snapshot so counts/percentages are correct
-                          rarityIndexSnapshot: rarityIndex || undefined,
+                          collectionMint: db!.collectionMint,
+                          rarityIndexSnapshot: {
+                            total: db!.items.length,
+                            traits: db!.traits,
+                            overall: db!.overall,
+                            traitAvg: db!.traitAvg,
+                          },
                         });
                       });
                     }}
@@ -678,25 +460,22 @@ export default function MetaMartianCollectionGallery({
                     title="View details"
                   >
                     <div className="pointer-events-none absolute left-2 top-2 z-10 flex gap-1">
-                      {typeof it.minted === "boolean" && (
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                            it.minted
-                              ? "bg-emerald-500/90 text-white"
-                              : "bg-neutral-300/90 text-neutral-900 dark:bg-neutral-700/90 dark:text-white"
-                          }`}
-                        >
-                          {it.minted ? "Minted" : "Not minted"}
-                        </span>
-                      )}
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          isMinted
+                            ? "bg-emerald-500/90 text-white"
+                            : "bg-neutral-300/90 text-neutral-900 dark:bg-neutral-700/90 dark:text-white"
+                        }`}
+                      >
+                        {isMinted ? "Minted" : "Not minted"}
+                      </span>
                     </div>
 
                     <div className="aspect-square overflow-hidden bg-neutral-100 dark:bg-neutral-900">
-                      <motion.img
-                        layoutId={prefersReduced ? undefined : `mm-img-${it.index}`}
+                      <img
                         src={it.image}
                         alt={it.name}
-                        className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"
+                        className="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03] will-change-transform"
                         draggable={false}
                         loading="lazy"
                         decoding="async"
@@ -705,11 +484,9 @@ export default function MetaMartianCollectionGallery({
                     </div>
                     <div className="p-2">
                       <div className="truncate text-sm font-medium">{it.name}</div>
-                                             {attrReady && rarityIndex && (
-                         <div className="truncate text-[10px] opacity-60">
-                           Score: {Number.isFinite(score || 0) ? Math.round(score as number).toLocaleString() : "—"}
-                         </div>
-                       )}
+                      <div className="truncate text-[10px] opacity-60">
+                        Score: {Math.round(it.score).toLocaleString()} · #{it.rank}
+                      </div>
                     </div>
                   </button>
                 );
@@ -717,7 +494,7 @@ export default function MetaMartianCollectionGallery({
           </div>
 
           <div ref={sentinelRef} className="h-12" />
-          {shown.length >= (filteredSorted?.length || 0) && !loading && (
+          {shown.length >= (filteredSorted?.length || 0) && !dbLoading && (
             <div className="py-6 text-center text-xs opacity-60">— end of collection —</div>
           )}
         </div>

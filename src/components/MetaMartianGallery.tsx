@@ -4,14 +4,14 @@ import { useEffect, useMemo, useState, useTransition } from "react";
 import dynamic from "next/dynamic";
 import useUmiStore from "@/store/useUmiStore";
 import useMetaMartianReveal from "@/hooks/useMetaMartianReveal";
-import { motion } from "framer-motion";
+import { useCollectionDB } from "@/store/useCollectionDB";
+
 
 import { publicKey } from "@metaplex-foundation/umi";
 import { fetchCandyMachine } from "@metaplex-foundation/mpl-candy-machine";
 import { fetchMetadata, findMetadataPda } from "@metaplex-foundation/mpl-token-metadata";
 import { Connection, PublicKey as Web3Pk } from "@solana/web3.js";
 import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
-import { loadRarityIndex, scoreFromAttributes } from "@/lib/rarity";
 
 const WalletMultiButton = dynamic(
   async () => (await import("@solana/wallet-adapter-react-ui")).WalletMultiButton,
@@ -51,13 +51,16 @@ export default function MetaMartianGallery({
 
   const { Modal: RevealModal, openWithData } = useMetaMartianReveal();
 
+  // Database store
+  const db = useCollectionDB((s) => s.db);
+  const loadDB = useCollectionDB((s) => s.load);
+  const getItemByMetadata = useCollectionDB((s) => s.getItemByMetadata);
+
   const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
   const [items, setItems] = useState<Card[]>([]);
   const [page, setPage] = useState(1);
-  const [rarityIndex, setRarityIndex] = useState<RarityIndex | null>(null);
-  const [loadingRarity, setLoadingRarity] = useState(false);
 
   // For smooth modal opening
   const [pending, startTransition] = useTransition();
@@ -93,6 +96,13 @@ export default function MetaMartianGallery({
       dead = true;
     };
   }, [candyMachineId, collectionMintOverride, umi]);
+
+  // Load database when collection mint is resolved
+  useEffect(() => {
+    if (collectionMint) {
+      loadDB(collectionMint);
+    }
+  }, [collectionMint, loadDB]);
 
   // load wallet NFTs and filter by collection
   useEffect(() => {
@@ -165,7 +175,18 @@ export default function MetaMartianGallery({
                   attributes = Array.isArray(json?.attributes) ? json.attributes : undefined;
                 } catch {}
               }
-              cards.push({ mint: mintStr, name, image, uri, attributes });
+              // Look up item in database using metadata URI
+              const dbItem = uri ? getItemByMetadata(uri) : undefined;
+
+              cards.push({
+                mint: mintStr,
+                name,
+                image,
+                uri,
+                attributes,
+                rarityScore: dbItem?.score,
+                rarityRank: dbItem?.rank,
+              });
             } catch {}
           })
         );
@@ -190,101 +211,7 @@ export default function MetaMartianGallery({
       }
     }
     run();
-  }, [signer, collectionMint, endpoint, umi]);
-
-  // Load rarity data and calculate scores/rankings
-  useEffect(() => {
-    let cancelled = false;
-    async function loadRarityData() {
-      if (!collectionMint || items.length === 0) return;
-
-      setLoadingRarity(true);
-      try {
-        // Load rarity index
-        const rIndex = await loadRarityIndex({ collectionMint });
-        if (cancelled) return;
-        
-        if (rIndex) {
-          setRarityIndex(rIndex);
-
-          // Load collection catalog to calculate rankings
-          const catalogUrl = `/collection/${collectionMint}-catalog.local.json`;
-          const catalogRes = await fetch(catalogUrl).catch(() => 
-            fetch(catalogUrl.replace("-catalog.local.json", "-catalog.json"))
-          );
-
-          let allScores: number[] = [];
-          if (catalogRes.ok) {
-            const catalog = await catalogRes.json();
-            
-            // Calculate scores for all items in the collection
-            for (const item of catalog.items || []) {
-              let itemAttrs: any[] = [];
-              
-              if (Array.isArray(item.attributes)) {
-                itemAttrs = item.attributes;
-              } else if (item.metadata) {
-                try {
-                  const metaRes = await fetch(item.metadata);
-                  const metaJson = await metaRes.json();
-                  itemAttrs = Array.isArray(metaJson.attributes) ? metaJson.attributes : [];
-                } catch {
-                  itemAttrs = [];
-                }
-              }
-              
-              const itemScore = scoreFromAttributes(itemAttrs, rIndex);
-              allScores.push(itemScore);
-            }
-            
-            // Sort scores in descending order (highest = rank 1)
-            allScores.sort((a, b) => b - a);
-          }
-
-          // Calculate scores and rankings for user's NFTs
-          const updatedItems = items.map(item => {
-            if (!item.attributes) return item;
-            
-            const rarityScore = scoreFromAttributes(item.attributes, rIndex);
-            
-            // Calculate rank if we have collection data
-            let rarityRank: number | undefined;
-            if (allScores.length > 0) {
-              rarityRank = 1;
-              for (const score of allScores) {
-                if (score > rarityScore) {
-                  rarityRank++;
-                } else {
-                  break;
-                }
-              }
-            }
-            
-            return {
-              ...item,
-              rarityScore,
-              rarityRank
-            };
-          });
-
-          if (!cancelled) {
-            setItems(updatedItems);
-          }
-        }
-      } catch (error) {
-        console.warn("Could not load rarity data:", error);
-      } finally {
-        if (!cancelled) {
-          setLoadingRarity(false);
-        }
-      }
-    }
-
-    loadRarityData();
-    return () => {
-      cancelled = true;
-    };
-  }, [items.length, collectionMint]); // Only depend on items.length to avoid infinite loops
+  }, [signer, collectionMint, endpoint, umi, getItemByMetadata]);
 
   // pagination
   const total = items.length;
@@ -310,7 +237,7 @@ export default function MetaMartianGallery({
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Your MetaMartians</h3>
         <div className="text-xs opacity-70 ml-4">
-          {loading ? "Loading…" : loadingRarity ? "Loading rarity…" : total === 0 ? "None found" : `${total} found`}
+          {loading ? "Loading…" : total === 0 ? "None found" : `${total} found`}
         </div>
       </div>
 
@@ -356,7 +283,12 @@ export default function MetaMartianGallery({
                       title: "Your MetaMartian",
                       collectionMint: collectionMint ?? undefined,
                       // ✅ snapshot fixes the 100% / score=1 issue
-                      rarityIndexSnapshot: rarityIndex || undefined,
+                      rarityIndexSnapshot: db ? {
+                        total: db.items.length,
+                        traits: db.traits,
+                        overall: db.overall,
+                        traitAvg: db.traitAvg,
+                      } : undefined,
                     });
                   });
                 }}
@@ -365,11 +297,10 @@ export default function MetaMartianGallery({
               >
                 <div className="aspect-square bg-neutral-100 dark:bg-neutral-900 overflow-hidden">
                   {it.image ? (
-                    <motion.img
-                      layoutId={prefersReduced ? undefined : `mm-img-${it.mint}`}
+                    <img
                       src={it.image}
                       alt={it.name}
-                      className="h-full w-full object-cover group-hover:scale-[1.02] transition-transform"
+                      className="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03] will-change-transform"
                       draggable={false}
                     />
                   ) : (

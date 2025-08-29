@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
-import { motion, AnimatePresence } from "framer-motion";
+
 
 type Attribute = { trait_type?: string; value?: unknown };
 type RarityIndex = {
@@ -440,32 +440,21 @@ export default function MetaMartianRevealModal({
 
   const indexedTitle = multi ? `${headerTitle} (${index + 1}/${items!.length})` : headerTitle;
 
+  if (!open) return null;
+
   return (
-    <AnimatePresence>
-      {open && (
-        <motion.div
-          key="mm-overlay"
-          ref={backdropRef}
-          className="fixed inset-0 z-[70] flex h-[100svh] items-center justify-center bg-black/60 px-4 py-6 backdrop-blur-sm sm:px-6"
-          role="dialog"
-          aria-modal="true"
-          initial={prefersReduced ? { opacity: 1 } : { opacity: 0 }}
-          animate={{ opacity: 1 }}
-          exit={{ opacity: 0 }}
-          transition={prefersReduced ? { duration: 0.1 } : { duration: 0.12 }}
-          onClick={onBackdropClick}
-        >
-          {/* Panel */}
-          <motion.div
-            key={`mm-panel-${sessionKey}`}
-            className="relative w-full max-w-[64rem] overflow-hidden rounded-3xl border border-white/10 bg-white/95 shadow-2xl dark:bg-zinc-900/95 will-change-transform"
-            // stop clicks inside from closing
-            onClick={(e) => e.stopPropagation()}
-            initial={prefersReduced ? { opacity: 1 } : { y: 8, scale: 0.985, opacity: 0.98 }}
-            animate={{ y: 0, scale: 1, opacity: 1 }}
-            exit={prefersReduced ? { opacity: 0 } : { y: 6, scale: 0.99, opacity: 0 }}
-            transition={prefersReduced ? { duration: 0.1 } : { duration: 0.16, ease: [0.22, 0.61, 0.36, 1] }}
-          >
+    <div
+      ref={backdropRef}
+      className="fixed inset-0 z-[70] flex h-[100svh] items-center justify-center bg-black/60 px-4 py-6 backdrop-blur-sm sm:px-6 opacity-100 transition-opacity duration-150"
+      role="dialog"
+      aria-modal="true"
+      onClick={onBackdropClick}
+    >
+      {/* Panel */}
+      <div
+        className="relative w-full max-w-[64rem] overflow-hidden rounded-3xl border border-white/10 bg-white/95 shadow-2xl dark:bg-zinc-900/95 translate-y-0 opacity-100 transition duration-150"
+        onClick={(e) => e.stopPropagation()}
+      >
         {/* Header */}
         <div className="flex items-center justify-between gap-3 border-b border-black/10 bg-white/80 px-5 py-3 backdrop-blur dark:border-white/10 dark:bg-zinc-900/80">
           <h3 className="text-base font-semibold">{indexedTitle}</h3>
@@ -514,14 +503,12 @@ export default function MetaMartianRevealModal({
               <div className="relative aspect-square w-full overflow-hidden rounded-3xl border border-black/10 bg-white dark:border-white/10 dark:bg-zinc-900">
                 {effImage ? (
                   <>
-                    <motion.img
-                      layoutId={useSharedReturn && !prefersReduced ? `mm-img-${active?.indexKey ?? active?.mint ?? activeKey}` : undefined}
+                    <img
                       src={effImage}
                       alt={effName}
-                      className="block h-full w-full object-contain will-change-transform"
+                      className="block h-full w-full object-contain transition-opacity duration-150"
                       draggable={false}
                       style={{ imageRendering: "pixelated" }} // keeps 8-bit art crisp
-                      initial={false}   // prevents flash on index change
                     />
                     {!imgReady && (
                       <div className="absolute inset-0 animate-pulse bg-gradient-to-br from-black/5 to-transparent dark:from-white/10" />
@@ -650,9 +637,7 @@ export default function MetaMartianRevealModal({
             {/* end right column */}
           </div>
         </div>
-          </motion.div>
-        </motion.div>
-      )}
-    </AnimatePresence>
+      </div>
+    </div>
   );
 }

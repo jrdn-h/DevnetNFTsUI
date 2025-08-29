@@ -6,7 +6,8 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "build:db": "tsx scripts/build-collection-db.ts --catalog ./public/collection/$npm_config_mint-catalog --collectionMint $npm_config_mint --outDir ./public/db --concurrency 24"
   },
   "dependencies": {
     "@heroicons/react": "^2.1.5",
@@ -23,7 +24,6 @@
     "@solana/wallet-adapter-wallets": "^0.19.32",
     "@solana/web3.js": "^1.95.2",
     "bs58": "^4.0.1",
-    "framer-motion": "^12.23.12",
     "next": "^14.2.16",
     "next-themes": "^0.3.0",
     "npm": "^10.8.2",
@@ -39,6 +39,7 @@
     "eslint-config-next": "14.2.5",
     "postcss": "^8",
     "tailwindcss": "^3.4.1",
+    "tsx": "^4.7.0",
     "typescript": "^5"
   }
 }

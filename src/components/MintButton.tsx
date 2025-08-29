@@ -7,6 +7,19 @@ import bs58 from "bs58";
 import useUmiStore from "@/store/useUmiStore";
 import umiWithCurrentWalletAdapter from "@/lib/umi/umiWithCurrentWalletAdapter";
 import useMetaMartianReveal from "@/hooks/useMetaMartianReveal";
+import { useCollectionDB } from "@/store/useCollectionDB";
+
+// Fast polling helper for on-chain metadata
+async function pollMetadataOnce(umi: any, mdPda: any, tries = 80, intervalMs = 100) {
+  for (let i = 0; i < tries; i++) {
+    try {
+      return await fetchMetadata(umi, mdPda);
+    } catch {
+      await new Promise(r => setTimeout(r, intervalMs));
+    }
+  }
+  throw new Error("Metadata not found after waiting");
+}
 
 import { generateSigner, publicKey, signAllTransactions, some, transactionBuilder } from "@metaplex-foundation/umi";
 import {
@@ -19,7 +32,6 @@ import {
 import { fetchMetadata, findMetadataPda } from "@metaplex-foundation/mpl-token-metadata";
 import { setComputeUnitLimit, addMemo } from "@metaplex-foundation/mpl-toolbox";
 import MintingOverlay from "@/components/MintingOverlay";
-import { loadRarityIndex, scoreFromAttributes } from "@/lib/rarity";
 
 const WalletMultiButton = dynamic(
   async () => (await import("@solana/wallet-adapter-react-ui")).WalletMultiButton,
@@ -32,11 +44,10 @@ const GROUP_LABEL = process.env.NEXT_PUBLIC_CM_GROUP_LABEL || undefined;
 
 const STEPS = [
   "Preparing",
-  "Building transactions",
-  "Awaiting wallet approval",
-  "Sending & confirming",
-  "Fetching metadata",
-  "Processing results",
+  "Sending transaction",
+  "Confirming",
+  "Fetching on-chain metadata",
+  "Opening…",
 ];
 
 type Variant = "solid" | "glow";
@@ -59,6 +70,10 @@ export default function MintButton({
 }) {
   const signer = useUmiStore((s) => s.signer);
   const [mounted, setMounted] = useState(false);
+
+  // Database store
+  const db = useCollectionDB((s) => s.db);
+  const getItemByUriOrName = useCollectionDB((s) => s.getItemByUriOrName);
 
   const [busy, setBusy] = useState(false);
   const [stepIndex, setStepIndex] = useState(0);
@@ -152,10 +167,11 @@ export default function MintButton({
     return { mintLimitId, remainingSupply, perWalletLeft, maxAllowedNow: mx };
   };
 
-    // ---- One-mint helper (re-uses your exact flow) ----
+    // ---- Fast one-mint helper (O(1) DB lookup, no network/compute) ----
   const mintOne = async (umi: ReturnType<typeof umiWithCurrentWalletAdapter>, mintLimitId?: number) => {
     setStepIndex(1);
     const cm = await fetchCandyMachine(umi, publicKey(CM_ID));
+    const collectionMintStr = cm.collectionMint.toString();
 
     const collectionMd = await fetchMetadata(umi, findMetadataPda(umi, { mint: cm.collectionMint }));
     const collectionUpdateAuthorityPk = collectionMd.updateAuthority;
@@ -180,92 +196,55 @@ export default function MintButton({
         })
       );
 
-    setStepIndex(3);
+    setStepIndex(3); // awaiting wallet approval + send
+    // TIP: For faster UX, use confirmed commitment instead of finalized:
+    // const { signature } = await builder.sendAndConfirm(umi, { commitment: "confirmed" as any });
     const { signature } = await builder.sendAndConfirm(umi);
     const sig58 = bs58.encode(signature);
 
-    setStepIndex(4);
+    // Poll ONLY the on-chain metadata account (fast)
+    setStepIndex(4); // "Fetching on-chain metadata"
     const mdPda = findMetadataPda(umi, { mint: nftMint.publicKey });
-    let md: any | undefined;
-    for (let i = 0; i < 24; i++) {
-      try {
-        md = await fetchMetadata(umi, mdPda);
-        break;
-      } catch {
-        await new Promise((r) => setTimeout(r, 500));
-      }
-    }
+    const md = await pollMetadataOnce(umi, mdPda, 80, 100); // up to ~8s worst-case
 
+    // ZERO network/compute: look up in the prebuilt DB by uri or name
     let name = md?.name || "MetaMartian";
     let image: string | undefined;
     let attributes: any[] | undefined;
-    if (md?.uri) {
-      try {
-        const res = await fetch(md.uri);
-        const json = await res.json();
-        name = json?.name ?? name;
-        image = json?.image;
-        attributes = Array.isArray(json?.attributes) ? json.attributes : undefined;
-      } catch {}
-    }
-
-    // Rarity snapshot & yourScore calc (unchanged)
-    const collectionMintStr = cm.collectionMint.toString();
-    const rarityIndex = await loadRarityIndex({ collectionMint: collectionMintStr });
-    const yourScore =
-      rarityIndex && Array.isArray(attributes) ? scoreFromAttributes(attributes, rarityIndex) : undefined;
-
-    // Rarity rank (unchanged)
+    let yourScore: number | undefined;
     let rarityRank: number | undefined;
-    if (yourScore && rarityIndex?.traits) {
-      try {
-        const catalogUrl = `/collection/${collectionMintStr}-catalog.local.json`;
-        const catalogRes = await fetch(catalogUrl).catch(() =>
-          fetch(catalogUrl.replace("-catalog.local.json", "-catalog.json"))
-        );
 
-        if (catalogRes.ok) {
-          const catalog = await catalogRes.json();
-          const allScores: number[] = [];
-
-          for (const item of catalog.items || []) {
-            let itemAttrs: any[] = [];
-            if (Array.isArray(item.attributes)) {
-              itemAttrs = item.attributes;
-            } else if (item.metadata) {
-              try {
-                const metaRes = await fetch(item.metadata);
-                const metaJson = await metaRes.json();
-                itemAttrs = Array.isArray(metaJson.attributes) ? metaJson.attributes : [];
-              } catch {
-                itemAttrs = [];
-              }
-            }
-            const itemScore = scoreFromAttributes(itemAttrs, rarityIndex);
-            allScores.push(itemScore);
-          }
-
-          allScores.sort((a, b) => b - a);
-          rarityRank = 1;
-          for (const score of allScores) {
-            if (score > yourScore) rarityRank++;
-            else break;
-          }
-        }
-      } catch (error) {
-        console.warn("Could not calculate rarity rank:", error);
-      }
+    const dbItem = getItemByUriOrName(md?.uri, name);
+    if (dbItem) {
+      name = dbItem.name;
+      image = dbItem.image;
+      attributes = dbItem.attributes;
+      yourScore = dbItem.score;
+      rarityRank = dbItem.rank;
     }
 
-    // Reveal (same as your current flow)
+    // Optional tiny image preload for snappy reveal
+    if (image) {
+      const img = new Image();
+      img.src = image;
+    }
+
+    setStepIndex(5); // "Opening…"
+
+    // Open reveal using DB data (no further fetch)
     openWithData({
       name,
       image,
       attributes,
       mint: nftMint.publicKey.toString(),
       txSig: sig58,
-      collectionMint: collectionMintStr,
-      rarityIndexSnapshot: rarityIndex,
+      collectionMint: db?.collectionMint || collectionMintStr,
+      rarityIndexSnapshot: db ? {
+        total: db.items.length,
+        traits: db.traits,
+        overall: db.overall,
+        traitAvg: db.traitAvg,
+      } : undefined,
       yourScore,
       rarityRank,
     });
@@ -351,82 +330,37 @@ export default function MintButton({
     }> = [];
 
     const collectionMintStr = cm.collectionMint.toString();
-    const rarityIndex = await loadRarityIndex({ collectionMint: collectionMintStr });
 
     for (let i = 0; i < qty; i++) {
       setBatchNote(`Processing NFT ${i + 1} of ${qty}...`);
-      
+
       const nftMint = nftMints[i];
       const sig58 = bs58.encode(sigs[i]);
 
-      // Wait for metadata to be available
+      // Poll ONLY the on-chain metadata account (fast)
       const mdPda = findMetadataPda(umi, { mint: nftMint.publicKey });
-      let md: any | undefined;
-      for (let attempt = 0; attempt < 24; attempt++) {
-        try {
-          md = await fetchMetadata(umi, mdPda);
-          break;
-        } catch {
-          await new Promise((r) => setTimeout(r, 500));
-        }
-      }
+      const md = await pollMetadataOnce(umi, mdPda, 80, 100);
 
+      // ZERO network/compute: look up in the prebuilt DB by uri or name
       let name = md?.name || "MetaMartian";
       let image: string | undefined;
       let attributes: any[] | undefined;
-      if (md?.uri) {
-        try {
-          const res = await fetch(md.uri);
-          const json = await res.json();
-          name = json?.name ?? name;
-          image = json?.image;
-          attributes = Array.isArray(json?.attributes) ? json.attributes : undefined;
-        } catch {}
+      let yourScore: number | undefined;
+      let rarityRank: number | undefined;
+
+      const dbItem = getItemByUriOrName(md?.uri, name);
+      if (dbItem) {
+        name = dbItem.name;
+        image = dbItem.image;
+        attributes = dbItem.attributes;
+        yourScore = dbItem.score;
+        rarityRank = dbItem.rank;
       }
 
-      const yourScore =
-        rarityIndex && Array.isArray(attributes) ? scoreFromAttributes(attributes, rarityIndex) : undefined;
-
-      // Calculate rarity rank
-      let rarityRank: number | undefined;
-      if (yourScore && rarityIndex?.traits) {
-        try {
-          const catalogUrl = `/collection/${collectionMintStr}-catalog.local.json`;
-          const catalogRes = await fetch(catalogUrl).catch(() =>
-            fetch(catalogUrl.replace("-catalog.local.json", "-catalog.json"))
-          );
-
-          if (catalogRes.ok) {
-            const catalog = await catalogRes.json();
-            const allScores: number[] = [];
-
-            for (const item of catalog.items || []) {
-              let itemAttrs: any[] = [];
-              if (Array.isArray(item.attributes)) {
-                itemAttrs = item.attributes;
-              } else if (item.metadata) {
-                try {
-                  const metaRes = await fetch(item.metadata);
-                  const metaJson = await metaRes.json();
-                  itemAttrs = Array.isArray(metaJson.attributes) ? metaJson.attributes : [];
-                } catch {
-                  itemAttrs = [];
-                }
-              }
-              const itemScore = scoreFromAttributes(itemAttrs, rarityIndex);
-              allScores.push(itemScore);
-            }
-
-            allScores.sort((a, b) => b - a);
-            rarityRank = 1;
-            for (const score of allScores) {
-              if (score > yourScore) rarityRank++;
-              else break;
-            }
-          }
-        } catch (error) {
-          console.warn("Could not calculate rarity rank:", error);
-        }
+      // Optional tiny image preload
+      if (image) {
+        const img = new Image();
+        img.src = image;
       }
 
       reveals.push({
@@ -435,7 +369,12 @@ export default function MintButton({
         attributes,
         mint: nftMint.publicKey.toString(),
         txSig: sig58,
-        rarityIndexSnapshot: rarityIndex,
+        rarityIndexSnapshot: db ? {
+          total: db.items.length,
+          traits: db.traits,
+          overall: db.overall,
+          traitAvg: db.traitAvg,
+        } : undefined,
         yourScore,
         rarityRank,
       });
@@ -494,14 +433,14 @@ export default function MintButton({
       }> = [];
 
       if (allowed === 1) {
-        // Single mint - use existing mintOne function for backward compatibility
+        // Single mint - use fast DB lookup approach
         await mintOne(umi, mintLimitId);
         setStatus("Minted!");
         return;
       } else {
-        // Multi-mint - use new batch signing approach
+        // Multi-mint - use new batch signing approach with fast DB lookups
         reveals = await mintBatch(umi, allowed, mintLimitId);
-        
+
         // Multi-mint - use new multi-item modal
         openWithData({
           items: reveals,
