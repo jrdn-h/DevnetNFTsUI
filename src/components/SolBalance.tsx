@@ -2,7 +2,7 @@
 
 import { useEffect, useState } from "react";
 import { useConnection, useWallet } from "@solana/wallet-adapter-react";
-import { LAMPORTS_PER_SOL } from "@solana/web3.js";
+import { getCachedBalance, subscribeToBalance } from "@/lib/balanceCache";
 
 export default function SolBalance() {
   const { connection } = useConnection();
@@ -13,34 +13,22 @@ export default function SolBalance() {
   useEffect(() => {
     if (!connected || !publicKey || !connection) {
       setBalance(null);
+      setLoading(false);
       return;
     }
 
-    const fetchBalance = async () => {
-      setLoading(true);
-      try {
-        // Double-check connection exists before calling getBalance
-        if (!connection || !connection.getBalance) {
-          throw new Error("Connection not available");
-        }
-        
-        const lamports = await connection.getBalance(publicKey);
-        const solBalance = lamports / LAMPORTS_PER_SOL;
-        setBalance(solBalance);
-      } catch (error) {
-        console.error("Error fetching balance:", error);
-        setBalance(null);
-      } finally {
-        setLoading(false);
-      }
-    };
+    // Subscribe to balance updates from the global cache
+    const unsubscribe = subscribeToBalance(publicKey, (newBalance, isLoading) => {
+      setBalance(newBalance);
+      setLoading(isLoading);
+    });
 
-    fetchBalance();
+    // Initial fetch through cache
+    getCachedBalance(connection, publicKey).catch(() => {
+      // Error handling is done in the cache
+    });
 
-    // Set up interval to refresh balance every 30 seconds
-    const interval = setInterval(fetchBalance, 30000);
-
-    return () => clearInterval(interval);
+    return unsubscribe;
   }, [connection, publicKey, connected]);
 
   if (!connected || !publicKey) {

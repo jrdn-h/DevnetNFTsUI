@@ -1,10 +1,11 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 import { useWallet } from "@solana/wallet-adapter-react";
 import useMetaMartianReveal from "@/hooks/useMetaMartianReveal";
 import umiWithCurrentWalletAdapter from "@/lib/umi/umiWithCurrentWalletAdapter";
 import { refreshMintedCacheOnce, getMintedSetFromCache } from "@/lib/mintedCache";
+import { motion } from "framer-motion";
 
 type Attr = { trait_type?: string; value?: any };
 type Item = {
@@ -134,6 +135,13 @@ export default function MetaMartianCollectionGallery({
   const [sortKey, setSortKey] = useState<SortKey>("num-asc");
 
   const [selectedTraits, setSelectedTraits] = useState<Record<string, Set<string>>>({});
+
+  // For smooth modal opening
+  const [pending, startTransition] = useTransition();
+
+  // Reduced motion support
+  const prefersReduced = typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
 
   useEffect(() => {
     (async () => {
@@ -434,16 +442,31 @@ export default function MetaMartianCollectionGallery({
         setHighlight(item.index);
         setTimeout(() => setHighlight(null), 1600);
         const attrs = attrMapRef.current.get(item.index) || [];
-                 openWithData({
-           name: item.name,
-           image: item.image,
-           attributes: attrs,
-           txSig: null,
-           mint: undefined,
-           collectionMint: catalog.collectionMint,
-           rarityIndexSnapshot: rarityIndex || undefined,
-           yourScore: rarityScoreByIndex.get(item.index),
-         });
+        // Calculate true rarity rank by finding position in rarity-sorted list
+        const itemRank = filteredSorted.length > 0 ? (() => {
+          const raritySorted = [...filteredSorted].sort((a, b) => {
+            const ra = rarityScoreByIndex.get(a.index) ?? 0;
+            const rb = rarityScoreByIndex.get(b.index) ?? 0;
+            return rb - ra; // desc order: higher score = lower rank number
+          });
+          return raritySorted.findIndex(it => it.index === item.index) + 1;
+        })() : undefined;
+        // Freeze a lightweight, filter-respecting snapshot: name/image/metadata/indexKey only
+        const itemsForModal = filteredSorted.map((x) => ({
+          name: x.name,
+          image: x.image,
+          metadataUri: x.metadata,   // reveal.tsx fetches attrs lazily
+          indexKey: x.index,         // stable key for caching
+        }));
+
+        openWithData({
+          items: itemsForModal,
+          initialIndex: Math.max(0, i),
+          title: "MetaMartian details",
+          collectionMint: catalog.collectionMint,
+          // ✅ pass the snapshot so counts/percentages are correct
+          rarityIndexSnapshot: rarityIndex || undefined,
+        });
       }, 40);
     }
   }, [searchNum, filteredSorted, catalog, openWithData]);
@@ -595,24 +618,60 @@ export default function MetaMartianCollectionGallery({
               ))}
 
             {!loading &&
-              shown.map((it) => {
+              shown.map((it, index) => {
                 const score = rarityScoreByIndex.get(it.index);
+                // Calculate true rarity rank by finding position in rarity-sorted list
+                const rarityRank = filteredSorted.length > 0 ? (() => {
+                  // Create a rarity-sorted copy of the filtered items
+                  const raritySorted = [...filteredSorted].sort((a, b) => {
+                    const ra = rarityScoreByIndex.get(a.index) ?? 0;
+                    const rb = rarityScoreByIndex.get(b.index) ?? 0;
+                    return rb - ra; // desc order: higher score = lower rank number
+                  });
+                  return raritySorted.findIndex(item => item.index === it.index) + 1;
+                })() : undefined;
                 return (
                   <button
                     key={it.index}
-                    id={`mm-item-${it.index}`}
-                                         onClick={() =>
-                       openWithData({
-                         name: it.name,
-                         image: it.image,
-                         attributes: attrMapRef.current.get(it.index) || [],
-                         txSig: null,
-                         mint: undefined,
-                         collectionMint: catalog?.collectionMint,
-                         rarityIndexSnapshot: rarityIndex || undefined,
-                         yourScore: rarityScoreByIndex.get(it.index),
-                       })
-                     }
+                    id={`mm-card-${it.index}`}
+                    onPointerEnter={() => {
+                      // Preload image on hover
+                      if (it.image) {
+                        const img = new Image();
+                        img.src = it.image;
+                      }
+                    }}
+                    onPointerDown={() => {
+                      // Preload image on touch/press
+                      if (it.image) {
+                        const img = new Image();
+                        img.src = it.image;
+                      }
+                    }}
+                    onClick={() => {
+                      // One-tap open without blocking main thread
+                      startTransition(() => {
+                        // Freeze a lightweight, filter-respecting snapshot: name/image/metadata/indexKey only
+                        const itemsForModal = filteredSorted.map((x) => ({
+                          name: x.name,
+                          image: x.image,
+                          metadataUri: x.metadata,   // reveal.tsx fetches attrs lazily
+                          indexKey: x.index,         // stable key for caching & shared-element
+                        }));
+
+                        // Find the clicked item's position within that filtered list
+                        const modalIndex = filteredSorted.findIndex((y) => y.index === it.index);
+
+                        openWithData({
+                          items: itemsForModal,
+                          initialIndex: Math.max(0, modalIndex),
+                          title: "MetaMartian details",
+                          collectionMint: catalog?.collectionMint,
+                          // ✅ pass the snapshot so counts/percentages are correct
+                          rarityIndexSnapshot: rarityIndex || undefined,
+                        });
+                      });
+                    }}
                     className={`group relative overflow-hidden rounded-xl border text-left transition hover:shadow-md dark:border-neutral-800 ${
                       highlight === it.index ? "ring-2 ring-emerald-400" : ""
                     }`}
@@ -633,8 +692,8 @@ export default function MetaMartianCollectionGallery({
                     </div>
 
                     <div className="aspect-square overflow-hidden bg-neutral-100 dark:bg-neutral-900">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img
+                      <motion.img
+                        layoutId={prefersReduced ? undefined : `mm-img-${it.index}`}
                         src={it.image}
                         alt={it.name}
                         className="h-full w-full object-cover transition-transform group-hover:scale-[1.02]"

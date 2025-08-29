@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import { motion, AnimatePresence } from "framer-motion";
 
 type Attribute = { trait_type?: string; value?: unknown };
 type RarityIndex = {
@@ -10,6 +11,56 @@ type RarityIndex = {
   traitAvg?: Record<string, number>;
 };
 type TraitStat = { traitType: string; value: string; pct?: number; score?: number; count?: number };
+
+// normalize trait keys exactly like collection builder
+const normType = (x: any) => {
+  const s = (x ?? "—").toString().trim();
+  return s.length ? s : "—";
+};
+const normVal = (v: any) =>
+  v === null || v === undefined || v === ""
+    ? "None"
+    : typeof v === "object"
+    ? JSON.stringify(v)
+    : String(v);
+
+// (Optional safety) coerce total if snapshot arrives without it
+const coerceIndex = (idx?: RarityIndex) => {
+  if (!idx) return undefined;
+  let total = Number(idx.total || 0);
+  if (!total || total <= 0) {
+    let best = 0;
+    for (const tt of Object.keys(idx.traits || {})) {
+      const sum = Object.values(idx.traits[tt] || {}).reduce((a, b) => a + Number(b || 0), 0);
+      if (sum > best) best = sum;
+    }
+    total = best || 1;
+  }
+  return { ...idx, total };
+};
+
+// helpers for shared-element transitions
+const isInViewport = (el: Element) => {
+  const r = el.getBoundingClientRect();
+  const vh = window.innerHeight || document.documentElement.clientHeight;
+  const vw = window.innerWidth || document.documentElement.clientWidth;
+  // require at least partial visibility
+  return r.bottom >= 0 && r.right >= 0 && r.top <= vh && r.left <= vw;
+};
+
+// ADD
+type MintedItem = {
+  name?: string;
+  image?: string;
+  mint?: string;
+  txSig?: string | null;
+  attributes?: Attribute[];
+  rarityIndexSnapshot?: RarityIndex;
+  yourScore?: number;
+  rarityRank?: number;
+  indexKey?: string;        // stable key (e.g., catalog index or mint)
+  metadataUri?: string;     // where to fetch attributes if they weren't passed
+};
 
 type Props = {
   open: boolean;
@@ -25,6 +76,14 @@ type Props = {
   title?: string;
   rarityIndexSnapshot?: RarityIndex;
   yourScore?: number;
+  /** Optional callback when modal closes - useful for refreshing supply after minting */
+  onModalClose?: () => void;
+  /** Optional rarity rank (1-based) when known from sorting */
+  rarityRank?: number;
+  /** Optional: show multiple newly minted items in one modal */
+  items?: MintedItem[];
+  /** Optional: start index when items are provided */
+  initialIndex?: number;
 };
 
 export default function MetaMartianRevealModal({
@@ -40,6 +99,10 @@ export default function MetaMartianRevealModal({
   title,
   rarityIndexSnapshot,
   yourScore,
+  onModalClose,
+  rarityRank: providedRank,
+  items,
+  initialIndex,
 }: Props) {
   const [traitStats, setTraitStats] = useState<TraitStat[]>([]);
   const [yourOverall, setYourOverall] = useState<number | null>(null);
@@ -50,28 +113,141 @@ export default function MetaMartianRevealModal({
   const [loadingRarity, setLoadingRarity] = useState<boolean>(false);
   const [rarityErr, setRarityErr] = useState<string | null>(null);
 
+  // ADD caches
+  const attrCacheRef = useRef(new Map<string, Attribute[]>());
+
+  // ADD local override attrs so we can compute when the props didn't include attributes
+  const [lazyAttrs, setLazyAttrs] = useState<Attribute[] | null>(null);
+
+  // (Optional but robust) Force a fresh render per open
+  const [sessionKey, setSessionKey] = useState(0);
+
+  // Image ready state for smooth loading
+  const [imgReady, setImgReady] = useState(false);
+
+  // Reduced motion support
+  const prefersReduced = typeof window !== "undefined" &&
+    window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+
+  // Shared-element return control
+  const [useSharedReturn, setUseSharedReturn] = useState(true);
+
+  // ADD state and derived item
+  const [index, setIndex] = useState<number>(initialIndex ?? 0);
+  const multi = Array.isArray(items) && items.length > 0;
+  const active = useMemo(
+    () => (multi ? items![Math.max(0, Math.min(index, items!.length - 1))] : null),
+    [multi, items, index]
+  );
+
+  // Use active item when present, else fall back to single props
+  const effName = active?.name ?? name;
+  const effImage = active?.image ?? image;
+  const effMint = active?.mint ?? mint;
+  const effTxSig = active?.txSig ?? txSig;
+  const effAttributes = active?.attributes ?? attributes;
+  const effRarityIndexSnapshot = active?.rarityIndexSnapshot ?? rarityIndexSnapshot;
+  const effYourScore = active?.yourScore ?? yourScore;
+  const effRank = (active?.rarityRank ?? providedRank) || undefined;
+
+  // Use the effective snapshot everywhere in the effect
+  const effectiveRaritySnapshot = effRarityIndexSnapshot;
+
+  // Helper to resolve a stable key for caching
+  const activeKey = useMemo(() => {
+    const base = active?.indexKey || active?.mint || active?.metadataUri || effName || "item";
+    return `${collectionMint ?? ""}::${String(base)}`;
+  }, [active, effName, collectionMint]);
+
+  // Reset nav + lazy state whenever the modal opens with a new dataset or index
+  useEffect(() => {
+    if (!open) return;
+
+    // start at the requested item
+    setIndex(initialIndex ?? 0);
+
+    // clear lazy-loaded attrs and transient UI state
+    setLazyAttrs(null);
+    setTraitStats([]);
+    setYourOverall(null);
+    setAvgOverall(null);
+    setMinOverall(null);
+    setMaxOverall(null);
+    setRarityErr(null);
+  }, [open, initialIndex, items]);
+
+  // Force fresh render when modal opens with new data
+  useEffect(() => {
+    if (open) setSessionKey((k) => k + 1);
+  }, [open, items, initialIndex]);
+
+  // Determine if we should use shared-element return
+  useEffect(() => {
+    if (!open) return;
+    // resolve the card element by the same key you passed to items[index].indexKey
+    const key = active?.indexKey ?? active?.mint ?? activeKey;
+    const el = key ? document.getElementById(`mm-card-${key}`) : null;
+    setUseSharedReturn(!!el && isInViewport(el));
+  }, [open, active?.indexKey, active?.mint, activeKey]);
+
+  // Image ready state for smooth loading
+  useEffect(() => {
+    let cancelled = false;
+    setImgReady(false);
+    if (!effImage) return;
+    const i = new Image();
+    i.src = effImage;
+    (i.decode?.() ?? Promise.resolve()).catch(() => {}).finally(() => {
+      if (!cancelled) setImgReady(true);
+    });
+    return () => { cancelled = true; };
+  }, [effImage]);
+
   // Backdrop ref (for outside click)
   const backdropRef = useRef<HTMLDivElement>(null);
 
-  // Lock background scroll while open
+  // Lock background scroll while open (with scrollbar compensation)
   useEffect(() => {
     if (!open) return;
-    const prev = document.body.style.overflow;
+    const prevOverflow = document.body.style.overflow;
+    const prevPad = document.body.style.paddingRight;
+
+    const sw = window.innerWidth - document.documentElement.clientWidth; // scrollbar width
+    if (sw > 0) document.body.style.paddingRight = `${sw}px`;
     document.body.style.overflow = "hidden";
-    return () => { document.body.style.overflow = prev; };
+
+    return () => {
+      document.body.style.overflow = prevOverflow;
+      document.body.style.paddingRight = prevPad;
+    };
   }, [open]);
 
-  // Close on Escape
+  // Close on Escape (+ optional prev/next with Arrow keys when multi)
   useEffect(() => {
     if (!open) return;
-    const onKey = (e: KeyboardEvent) => e.key === "Escape" && onClose();
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === "Escape") {
+        onClose();
+        onModalClose?.();
+        return;
+      }
+      // OPTIONAL: prev/next when multiple items are shown
+      if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && Array.isArray(items) && items.length > 1) {
+        e.preventDefault();
+        if (e.key === "ArrowLeft") setIndex((i) => Math.max(0, i - 1));
+        if (e.key === "ArrowRight") setIndex((i) => Math.min(items!.length - 1, i + 1));
+      }
+    };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose]);
+  }, [open, onClose, onModalClose, items]);
 
   // Close on clicking outside the panel
   const onBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    if (e.target === e.currentTarget) onClose();
+    if (e.target === e.currentTarget) {
+      onClose();
+      onModalClose?.();
+    }
   };
 
   const endpoint = (process.env.NEXT_PUBLIC_RPC_URL || "").toLowerCase();
@@ -84,42 +260,100 @@ export default function MetaMartianRevealModal({
     return undefined;
   }, [rarityIndexUrlOverride, collectionMint]);
 
+  // Lazy attribute loading effect
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      if (!open) return;
+
+      const haveAttrsFromProps = Array.isArray(effAttributes) && effAttributes.length > 0;
+      if (haveAttrsFromProps) return;
+
+      if (!attrCacheRef.current.has(activeKey)) {
+        // try lazy fetch via metadataUri
+        if (active?.metadataUri) {
+          try {
+            const res = await fetch(active.metadataUri, { cache: "no-store" });
+            const json = await res.json();
+            const got: Attribute[] = Array.isArray(json?.attributes) ? json.attributes : [];
+            if (!cancelled) {
+              attrCacheRef.current.set(activeKey, got);
+              setLazyAttrs(got);
+            }
+          } catch {/* ignore */}
+        }
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [open, activeKey, active?.metadataUri, effAttributes]);
+
+  // OPTIONAL: Preload neighbors for snappy prev/next
+  useEffect(() => {
+    const preload = async (item?: MintedItem) => {
+      if (!item?.metadataUri) return;
+      const k = item.indexKey || item.mint || item.metadataUri;
+      if (!k || attrCacheRef.current.has(k)) return;
+      try {
+        const r = await fetch(item.metadataUri, { cache: "no-store" });
+        const j = await r.json();
+        const got: Attribute[] = Array.isArray(j?.attributes) ? j.attributes : [];
+        attrCacheRef.current.set(k, got);
+      } catch {/* ignore */}
+    };
+    if (multi) {
+      preload(items![index - 1]);
+      preload(items![index + 1]);
+    }
+  }, [multi, items, index]);
+
   useEffect(() => {
     let cancelled = false;
     async function run() {
       if (!open) return;
 
-      if (!attributes || attributes.length === 0) {
+      // gather attrs from props OR lazy OR cache; fetch if needed
+      const haveAttrsFromProps = Array.isArray(effAttributes) && effAttributes.length > 0;
+      const cached = attrCacheRef.current.get(activeKey);
+      const attrsToUse = haveAttrsFromProps ? effAttributes
+                         : cached ? cached
+                         : lazyAttrs ?? [];
+
+      if (!attrsToUse || attrsToUse.length === 0) {
         setTraitStats([]);
         setYourOverall(null);
         setAvgOverall(null);
         setMaxOverall(null);
         setMinOverall(null);
         setAvgTraitScoreByType({});
+        // Don't return if you want to wait for lazy load; the lazy effect will re-run
         return;
       }
 
       // Use snapshot if provided
-      if (rarityIndexSnapshot) {
-        const total = Math.max(1, Number(rarityIndexSnapshot.total || 0));
-        const attrs = Array.isArray(attributes) ? attributes : [];
+      if (effectiveRaritySnapshot) {
+        const snap = coerceIndex(effectiveRaritySnapshot);
+        const total = Math.max(1, Number(snap?.total || 0));
+        const attrs = attrsToUse;
+
         const stats = attrs.map((a) => {
-          const traitType = (a?.trait_type ?? "—").toString().trim() || "—";
-          const value = a?.value == null || a?.value === "" ? "None" : (typeof a.value === "object" ? JSON.stringify(a.value) : String(a.value));
-          const count = rarityIndexSnapshot.traits?.[traitType]?.[value] ?? 0;
+          const traitType = normType(a?.trait_type);
+          const value = normVal(a?.value);
+          const count = snap?.traits?.[traitType]?.[value] ?? 0;
           const safe = Math.max(1, count);
           const pct = (safe / total) * 100;
           const score = total / safe;
           return { traitType, value, pct, score, count };
         });
-        const yourSum = typeof yourScore === "number" ? yourScore
+
+        const yourSum = typeof effYourScore === "number"
+          ? effYourScore
           : stats.reduce((s, t) => s + (t.score ?? 0), 0);
 
         setTraitStats(stats);
         setYourOverall(Number.isFinite(yourSum) ? yourSum : null);
-        setAvgOverall(rarityIndexSnapshot.overall?.avgObserved ?? null);
-        setMinOverall(rarityIndexSnapshot.overall?.minObserved ?? null);
-        setMaxOverall(rarityIndexSnapshot.overall?.maxObserved ?? null);
+        setAvgOverall(snap?.overall?.avgObserved ?? null);
+        setMinOverall(snap?.overall?.minObserved ?? null);
+        setMaxOverall(snap?.overall?.maxObserved ?? null);
         setLoadingRarity(false);
         return; // ✅ Use snapshot and skip network work
       }
@@ -134,14 +368,9 @@ export default function MetaMartianRevealModal({
         }
 
         // per-trait for THIS NFT
-        const stats: TraitStat[] = attributes.map((a) => {
-          const traitType = String(a?.trait_type ?? "—");
-          const value =
-            a?.value === null || a?.value === undefined || a?.value === ""
-              ? "None"
-              : typeof a?.value === "object"
-              ? JSON.stringify(a.value)
-              : String(a.value);
+        const stats: TraitStat[] = attrsToUse.map((a) => {
+          const traitType = normType(a?.trait_type);
+          const value = normVal(a?.value);
 
           if (!index) return { traitType, value };
 
@@ -197,41 +426,84 @@ export default function MetaMartianRevealModal({
     }
     run();
     return () => { cancelled = true; };
-  }, [open, attributes, rarityIndexUrl, rarityIndexSnapshot, yourScore]);
-
-  if (!open) return null;
+  }, [open, effAttributes, rarityIndexUrl, effectiveRaritySnapshot, effYourScore, activeKey, lazyAttrs]);
 
   const nice = (n: number, d = 2) =>
     Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: d }) : "—";
 
+  // Use provided rank from gallery sorting, or don't show rank if not available
+  const displayRank = effRank ? effRank.toLocaleString() : null;
+
   // Context-aware title (fits minting & gallery view)
   const headerTitle =
-    title ?? (txSig ? "Mint successful — MetaMartian" : "MetaMartian details");
+    title ?? (effTxSig ? "Mint successful — MetaMartian" : "MetaMartian details");
+
+  const indexedTitle = multi ? `${headerTitle} (${index + 1}/${items!.length})` : headerTitle;
 
   return (
-    <div
-      ref={backdropRef}
-      onClick={onBackdropClick}
-      className="fixed inset-0 z-[70] flex h-[100svh] items-center justify-center bg-black/60 px-4 py-6 backdrop-blur-sm sm:px-6"
-      role="dialog"
-      aria-modal="true"
-    >
-      {/* Panel */}
-      <div
-        className="relative w-full max-w-[64rem] overflow-hidden rounded-3xl border border-white/10 bg-white/95 shadow-2xl dark:bg-zinc-900/95"
-        // stop clicks inside from closing
-        onClick={(e) => e.stopPropagation()}
-      >
+    <AnimatePresence>
+      {open && (
+        <motion.div
+          key="mm-overlay"
+          ref={backdropRef}
+          className="fixed inset-0 z-[70] flex h-[100svh] items-center justify-center bg-black/60 px-4 py-6 backdrop-blur-sm sm:px-6"
+          role="dialog"
+          aria-modal="true"
+          initial={prefersReduced ? { opacity: 1 } : { opacity: 0 }}
+          animate={{ opacity: 1 }}
+          exit={{ opacity: 0 }}
+          transition={prefersReduced ? { duration: 0.1 } : { duration: 0.12 }}
+          onClick={onBackdropClick}
+        >
+          {/* Panel */}
+          <motion.div
+            key={`mm-panel-${sessionKey}`}
+            className="relative w-full max-w-[64rem] overflow-hidden rounded-3xl border border-white/10 bg-white/95 shadow-2xl dark:bg-zinc-900/95 will-change-transform"
+            // stop clicks inside from closing
+            onClick={(e) => e.stopPropagation()}
+            initial={prefersReduced ? { opacity: 1 } : { y: 8, scale: 0.985, opacity: 0.98 }}
+            animate={{ y: 0, scale: 1, opacity: 1 }}
+            exit={prefersReduced ? { opacity: 0 } : { y: 6, scale: 0.99, opacity: 0 }}
+            transition={prefersReduced ? { duration: 0.1 } : { duration: 0.16, ease: [0.22, 0.61, 0.36, 1] }}
+          >
         {/* Header */}
         <div className="flex items-center justify-between gap-3 border-b border-black/10 bg-white/80 px-5 py-3 backdrop-blur dark:border-white/10 dark:bg-zinc-900/80">
-          <h3 className="text-base font-semibold">{headerTitle}</h3>
-          <button
-            onClick={onClose}
-            className="rounded-full border border-black/10 px-3 py-1 text-xs opacity-80 hover:opacity-100 dark:border-white/10"
-            aria-label="Close"
-          >
-            Close
-          </button>
+          <h3 className="text-base font-semibold">{indexedTitle}</h3>
+          <div className="flex items-center gap-2">
+            {multi && (
+              <div className="mr-2 text-xs opacity-80 tabular-nums">
+                {index + 1} / {items!.length}
+              </div>
+            )}
+            {multi && (
+              <>
+                <button
+                  onClick={() => setIndex((i) => Math.max(0, i - 1))}
+                  disabled={index === 0}
+                  className="rounded-full border border-black/10 px-2 py-1 text-xs opacity-80 hover:opacity-100 disabled:opacity-40 dark:border-white/10"
+                >
+                  Prev
+                </button>
+                <button
+                  onClick={() => setIndex((i) => Math.min(items!.length - 1, i + 1))}
+                  disabled={index >= items!.length - 1}
+                  className="rounded-full border border-black/10 px-2 py-1 text-xs opacity-80 hover:opacity-100 disabled:opacity-40 dark:border-white/10"
+                >
+                  Next
+                </button>
+              </>
+            )}
+            <button
+              onClick={() => {
+                onClose();
+                onModalClose?.();
+              }}
+              className="rounded-full border border-black/10 px-3 py-1 text-xs opacity-80 hover:opacity-100 dark:border-white/10"
+              aria-label="Close"
+            >
+              Close
+            </button>
+          </div>
         </div>
 
         {/* Content */}
@@ -240,15 +512,21 @@ export default function MetaMartianRevealModal({
             {/* IMAGE */}
             <div className="w-full">
               <div className="relative aspect-square w-full overflow-hidden rounded-3xl border border-black/10 bg-white dark:border-white/10 dark:bg-zinc-900">
-                {/* eslint-disable-next-line @next/next/no-img-element */}
-                {image ? (
-                  <img
-                    src={image}
-                    alt={name}
-                    className="block h-full w-full object-contain"
-                    draggable={false}
-                    style={{ imageRendering: "pixelated" }} // keeps 8-bit art crisp
-                  />
+                {effImage ? (
+                  <>
+                    <motion.img
+                      layoutId={useSharedReturn && !prefersReduced ? `mm-img-${active?.indexKey ?? active?.mint ?? activeKey}` : undefined}
+                      src={effImage}
+                      alt={effName}
+                      className="block h-full w-full object-contain will-change-transform"
+                      draggable={false}
+                      style={{ imageRendering: "pixelated" }} // keeps 8-bit art crisp
+                      initial={false}   // prevents flash on index change
+                    />
+                    {!imgReady && (
+                      <div className="absolute inset-0 animate-pulse bg-gradient-to-br from-black/5 to-transparent dark:from-white/10" />
+                    )}
+                  </>
                 ) : (
                   <div className="grid h-full w-full place-items-center text-sm opacity-60">
                     No image found
@@ -258,11 +536,16 @@ export default function MetaMartianRevealModal({
               </div>
 
               <div className="mt-3 text-center">
-                <div className="text-lg font-medium">{name}</div>
+                <div className="text-lg font-medium">{effName}</div>
+                {displayRank && (
+                  <div className="mt-1 text-sm font-semibold text-purple-600 dark:text-purple-400">
+                    #{displayRank} rarest
+                  </div>
+                )}
                 <div className="mt-1 flex flex-wrap items-center justify-center gap-2 text-xs opacity-80">
-                  {mint && (
+                  {effMint && (
                     <a
-                      href={`https://explorer.solana.com/address/${mint}${clusterParam}`}
+                      href={`https://explorer.solana.com/address/${effMint}${clusterParam}`}
                       target="_blank"
                       rel="noreferrer"
                       className="underline"
@@ -270,11 +553,11 @@ export default function MetaMartianRevealModal({
                       Mint address
                     </a>
                   )}
-                  {txSig && (
+                  {effTxSig && (
                     <>
                       <span>•</span>
                       <a
-                        href={`https://explorer.solana.com/tx/${txSig}${clusterParam}`}
+                        href={`https://explorer.solana.com/tx/${effTxSig}${clusterParam}`}
                         target="_blank"
                         rel="noreferrer"
                         className="underline"
@@ -300,15 +583,15 @@ export default function MetaMartianRevealModal({
 
               {/* Overall metrics (observed when available) */}
               <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                <div className="rounded-xl border p-3 dark:border-white/10">
-                  <div className="text-xs opacity-70">Your Overall Score</div>
-                  <div className="text-lg font-semibold">
-                    {yourOverall != null ? nice(yourOverall, 0) : "—"}
-                  </div>
-                  <div className="text-[11px] opacity-60">
-                    Sum of your trait scores. Higher is rarer.
-                  </div>
-                </div>
+                                 <div className="rounded-xl border p-3 dark:border-white/10">
+                   <div className="text-xs opacity-70">Your Overall Score</div>
+                   <div className="text-lg font-semibold">
+                     {yourOverall != null ? nice(yourOverall, 0) : "—"}
+                   </div>
+                   <div className="text-[11px] opacity-60">
+                     Sum of your trait scores. Higher is rarer.
+                   </div>
+                 </div>
                 <div className="rounded-xl border p-3 dark:border-white/10">
                   <div className="text-xs opacity-70">Average Overall</div>
                   <div className="text-lg font-semibold">
@@ -356,10 +639,10 @@ export default function MetaMartianRevealModal({
                         style={{ width: `${Math.max(1, Math.min(100, t.pct ?? 0))}%` }}
                       />
                     </div>
-                    <div className="mt-1 flex flex-wrap items-center justify-between text-[11px] opacity-70">
-                      <span>Count in collection: {t.count != null ? Math.round(t.count).toLocaleString() : "—"}</span>
-                      <span>Score: {t.score != null ? Math.round(t.score).toLocaleString() : "—"}</span>
-                    </div>
+                                         <div className="mt-1 flex flex-wrap items-center justify-between text-[11px] opacity-70">
+                       <span>Count in collection: {t.count != null ? Math.round(t.count).toLocaleString() : "—"}</span>
+                       <span>Score: {t.score != null ? nice(t.score, 2) : "—"}</span>
+                     </div>
                   </div>
                 ))}
               </div>
@@ -367,19 +650,9 @@ export default function MetaMartianRevealModal({
             {/* end right column */}
           </div>
         </div>
-      </div>
-
-      {/* Scoped scrollbar styling */}
-      <style jsx global>{`
-        .mm-scroll { scrollbar-width: thin; scrollbar-color: rgba(0,0,0,0.35) transparent; }
-        .mm-scroll::-webkit-scrollbar { width: 8px; }
-        .mm-scroll::-webkit-scrollbar-thumb { background: rgba(0,0,0,0.35); border-radius: 9999px; }
-        .mm-scroll::-webkit-scrollbar-track { background: transparent; }
-        @media (prefers-color-scheme: dark) {
-          .mm-scroll { scrollbar-color: rgba(255,255,255,0.35) transparent; }
-          .mm-scroll::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.35); }
-        }
-      `}</style>
-    </div>
+          </motion.div>
+        </motion.div>
+      )}
+    </AnimatePresence>
   );
 }

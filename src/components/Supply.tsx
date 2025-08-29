@@ -51,13 +51,25 @@ export default function Supply({ refreshTrigger }: { refreshTrigger?: number }) 
     };
   }, [umi, refreshTrigger]);
 
-  if (!line) return null;
+  if (!line) {
+    return (
+      <div className="text-sm text-gray-500 dark:text-gray-400 font-tech">
+        Loading...
+      </div>
+    );
+  }
 
   const remaining = Math.max(0, line.available - line.redeemed);
+  const mintedPercentage = line.available > 0 ? (line.redeemed / line.available) * 100 : 0;
 
   return (
-    <p className="text-sm">
-      {remaining} / {line.available} remaining
-    </p>
+    <div className="text-sm font-tech">
+      <div className="font-semibold text-gray-900 dark:text-white">
+        {remaining.toLocaleString()} / {line.available.toLocaleString()}
+      </div>
+      <div className="text-xs text-gray-500 dark:text-gray-400">
+        {mintedPercentage.toFixed(0)}% minted
+      </div>
+    </div>
   );
 }

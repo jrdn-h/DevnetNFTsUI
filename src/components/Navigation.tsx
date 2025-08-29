@@ -4,6 +4,7 @@ import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { useState } from "react";
 import dynamic from "next/dynamic";
+import Image from "next/image";
 import ThemeSwitcher from "@/components/themeSwitcher";
 import SolBalance from "@/components/SolBalance";
 
@@ -13,7 +14,7 @@ const WalletMultiButton = dynamic(
 );
 
 const navItems = [
-  { name: "Home", href: "/", sections: ["banner", "about", "story", "team", "mint"] },
+  { name: "Home", href: "/", sections: ["banner", "mint", "about", "story", "team"] },
   { name: "Gallery", href: "/gallery", sections: [] },
   { name: "Collection", href: "/collection", sections: [] },
 ];
@@ -40,8 +41,17 @@ export default function Navigation() {
       <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
         <div className="flex justify-between items-center h-16">
           {/* Logo */}
-          <Link href="/" className="flex items-center space-x-2">
-            <div className="text-xl font-bold">MetaMartians</div>
+          <Link href="/" className="flex items-center space-x-3">
+            <div className="w-10 h-10 relative">
+              <Image
+                src="/PFP.png"
+                alt="MetaMartians Logo"
+                width={40}
+                height={40}
+                className="w-full h-full object-cover rounded-full"
+              />
+            </div>
+            <div className="text-xl font-bold font-pixel">MetaMartians</div>
           </Link>
 
           {/* Desktop Navigation */}
@@ -77,11 +87,11 @@ export default function Navigation() {
             ))}
           </div>
 
-          {/* Theme Switcher, SOL Balance & Wallet Button */}
+          {/* Theme Switcher, Wallet Button & SOL Balance */}
           <div className="hidden md:flex items-center space-x-4">
             <ThemeSwitcher />
-            <SolBalance />
             <WalletMultiButton />
+            <SolBalance />
           </div>
 
           {/* Mobile menu button */}
@@ -134,15 +144,15 @@ export default function Navigation() {
                 </div>
               ))}
               
-              {/* Mobile Theme Switcher, SOL Balance & Wallet Button */}
+              {/* Mobile Theme Switcher, Wallet Button & SOL Balance */}
               <div className="pt-4 border-t border-black/10 dark:border-white/10 space-y-2">
                 <div className="flex justify-center">
                   <ThemeSwitcher />
                 </div>
+                <WalletMultiButton />
                 <div className="flex justify-center">
                   <SolBalance />
                 </div>
-                <WalletMultiButton />
               </div>
             </div>
           </div>

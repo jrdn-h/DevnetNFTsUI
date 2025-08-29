@@ -18,6 +18,17 @@ type RarityIndex = {
   traitAvg?: Record<string, number>;
 };
 
+type MintedItem = {
+  name?: string;
+  image?: string;
+  mint?: string;
+  txSig?: string | null;
+  attributes?: Attr[];
+  rarityIndexSnapshot?: RarityIndex;
+  yourScore?: number;
+  rarityRank?: number;
+};
+
 type Last = {
   name?: string;
   image?: string;
@@ -27,6 +38,11 @@ type Last = {
   collectionMint?: string;
   rarityIndexSnapshot?: RarityIndex;
   yourScore?: number;
+  rarityRank?: number;
+  // Multi-item support
+  items?: MintedItem[];
+  title?: string;
+  initialIndex?: number;
 };
 
 const TOKEN_METADATA_PROGRAM_ID = "metaqbxxUerdq28cj1RbAWkYQm3ybzjb6a8bt518x1s"; // Metaplex Token Metadata
@@ -85,7 +101,7 @@ async function resolveMetadataPda(
   return { mdPda: mdPda[0], mintPk: pk }; // Return mdPda[0] as PublicKey
 }
 
-export default function useMetaMartianReveal() {
+export default function useMetaMartianReveal(onModalClose?: () => void) {
   const [open, setOpen] = useState(false);
   const [last, setLast] = useState<Last | null>(null);
 
@@ -105,7 +121,13 @@ export default function useMetaMartianReveal() {
     async (
       umi: Umi,
       mintOrMetadata: string | UmiPk,
-      opts?: { txSig?: string | null; collectionMint?: string }
+      opts?: { 
+        txSig?: string | null; 
+        collectionMint?: string;
+        rarityRank?: number;
+        rarityIndexSnapshot?: RarityIndex;
+        yourScore?: number;
+      }
     ) => {
       // 1) Resolve metadata PDA (supports either mint or metadata input)
       const { mdPda, mintPk } = await resolveMetadataPda(umi, mintOrMetadata, {
@@ -145,6 +167,9 @@ export default function useMetaMartianReveal() {
         mint: mintPk.toString(),
         txSig: opts?.txSig ?? null,
         collectionMint,
+        rarityIndexSnapshot: opts?.rarityIndexSnapshot,
+        yourScore: opts?.yourScore,
+        rarityRank: opts?.rarityRank,
       });
       setOpen(true);
     },
@@ -168,9 +193,14 @@ export default function useMetaMartianReveal() {
         attributes={last?.attributes}
         rarityIndexSnapshot={last?.rarityIndexSnapshot}
         yourScore={last?.yourScore}
+        rarityRank={last?.rarityRank}
+        onModalClose={onModalClose}
+        items={last?.items}
+        title={last?.title}
+        initialIndex={last?.initialIndex}
       />
     ),
-    [open, close, last]
+    [open, close, last, onModalClose]
   );
 
   return { Modal, openForMint, openWithData, reopen, last };

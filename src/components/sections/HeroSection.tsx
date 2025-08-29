@@ -8,6 +8,7 @@ interface HeroSectionProps {
   heroGif?: string;
   ctaText?: string;
   onCtaClick?: () => void;
+  bannerText?: string;
 }
 
 export default function HeroSection({
@@ -18,12 +19,20 @@ export default function HeroSection({
   heroGif,
   ctaText = "Mint Now",
   onCtaClick,
+  bannerText,
 }: HeroSectionProps) {
   return (
     <section id="banner" className="relative bg-gradient-to-b from-white to-zinc-50 text-zinc-900 dark:from-zinc-950 dark:to-black dark:text-zinc-100">
       <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-8 px-4 py-12 md:grid-cols-2 md:py-20">
         <div>
-          <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl">
+          {/* Banner above title */}
+          {bannerText && (
+            <div className="mb-4 inline-flex items-center px-4 py-2 rounded-full bg-gradient-to-r from-purple-500 to-pink-500 text-white text-sm font-medium shadow-lg font-tech">
+              <span className="mr-2">✨</span>
+              {bannerText}
+            </div>
+          )}
+          <h1 className="text-4xl font-extrabold tracking-tight sm:text-5xl font-pixel">
             {title}
           </h1>
           <p className="mt-4 max-w-prose text-base opacity-80">

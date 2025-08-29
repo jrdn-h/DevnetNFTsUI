@@ -8,8 +8,8 @@ type Props = {
   steps: string[];
   title?: string;
   subtitle?: string;
-  canCancel?: boolean;
-  onCancel?: () => void;
+  /** NEW: shows an extra line under the progress bar, e.g., "Mint 2 of 3" */
+  note?: string;
 };
 
 export default function MintingOverlay({
@@ -18,8 +18,7 @@ export default function MintingOverlay({
   steps,
   title = "Minting your MetaMartian…",
   subtitle = "Please approve in your wallet and keep this tab open.",
-  canCancel = false,
-  onCancel,
+  note,
 }: Props) {
   if (!open) return null;
 
@@ -64,8 +63,11 @@ export default function MintingOverlay({
           />
         </div>
 
+        {/* NEW: batch note */}
+        {note && <div className="mt-2 text-xs opacity-80">{note}</div>}
+
         {/* Stepper */}
-        <ol className="mt-4 space-y-2 text-sm">
+        <ol className="mt-3 space-y-2 text-sm">
           {steps.map((s, i) => {
             const active = i === stepIndex;
             const done = i < stepIndex;
@@ -112,17 +114,7 @@ export default function MintingOverlay({
           ))}
         </div>
 
-        {/* Cancel button */}
-        {canCancel && onCancel && (
-          <div className="mt-6 flex justify-center">
-            <button
-              onClick={onCancel}
-              className="px-4 py-2 text-sm rounded-xl border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
-            >
-              Cancel
-            </button>
-          </div>
-        )}
+
       </div>
     </div>
   );

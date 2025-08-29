@@ -19,8 +19,11 @@ export const WalletAdapterProvider: FC<Props> = ({ children }) => {
   // The network can be set to 'devnet', 'testnet', or 'mainnet-beta'.
   const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK || 'devnet';
   
-  // Always use public RPC endpoints
+  // You can provide a custom RPC endpoint via NEXT_PUBLIC_RPC_URL
   const endpoint = useMemo(() => {
+    if (process.env.NEXT_PUBLIC_RPC_URL) {
+      return process.env.NEXT_PUBLIC_RPC_URL;
+    }
     return clusterApiUrl(network as any);
   }, [network]);
 

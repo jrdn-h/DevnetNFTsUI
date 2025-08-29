@@ -1,105 +1,250 @@
 import Image from "next/image";
 import MintButton from "@/components/MintButton";
 import Supply from "@/components/Supply";
+import { useMemo, useState } from "react";
+
+type MintPhase = "live" | "upcoming" | "paused" | "soldout" | "ended";
 
 interface MintSectionProps {
   title?: string;
   description?: string;
-  price?: string;
-  maxSupply?: number;
+  /** SOL as number for math; fallback to string if needed */
+  priceSol?: number;
+  /** Optional precomputed USD price per SOL */
+  solUsd?: number;
+  /** Estimated fees in SOL to display (not charged by contract) */
+  estFeeSol?: number; // e.g. 0.02
+  /** Optional known status/phase */
+  phase?: MintPhase;
+  /** ISO timestamp for start if upcoming (enables countdown) */
+  startsAtIso?: string;
   mintImage?: string;
   mintGif?: string;
   features?: string[];
 }
 
 export default function MintSection({
-  title = "Mint",
-  description = "Connect your wallet and mint a MetaMartian.",
-  price = "0.1 SOL",
-  features = [
-    "Unique procedurally generated traits",
-    "Rich backstory and lore", 
-    "High-quality artwork",
-    "Community membership",
-    "Future utility and rewards"
-  ],
+  title = "Mint Your MetaMartian",
+  description = "Join the cosmic adventure by minting your unique MetaMartian. Each one is procedurally generated with rare traits and comes with its own story from across the universe.",
+  priceSol = 0.1,
+  solUsd,
+  estFeeSol = 0.02,
+  phase = "live",
+  startsAtIso,
   mintImage,
   mintGif,
+  features = [
+    "Unique procedurally generated traits",
+    "Rich backstory and lore",
+    "High-quality artwork",
+    "Community membership",
+    "Future utility and rewards",
+  ],
 }: MintSectionProps) {
+  const [supplyRefreshTrigger, setSupplyRefreshTrigger] = useState(0);
+
+  const handleMintSuccess = () => {
+    // Increment the refresh trigger to update supply after successful mint
+    setSupplyRefreshTrigger(prev => prev + 1);
+  };
+  // derived labels
+  const priceUsd = useMemo(
+    () => (solUsd ? (priceSol * solUsd).toFixed(2) : undefined),
+    [priceSol, solUsd]
+  );
+  const feeUsd = useMemo(
+    () => (solUsd ? (estFeeSol * solUsd).toFixed(2) : undefined),
+    [estFeeSol, solUsd]
+  );
+
+  // Formatting helpers
+  const formatSol = (n: number, maxDp = 4) =>
+    Number(n).toLocaleString(undefined, { maximumFractionDigits: maxDp });
+  const priceSolFmt = useMemo(() => formatSol(priceSol, 3), [priceSol]);
+  const feeSolFmt = useMemo(() => formatSol(estFeeSol, 3), [estFeeSol]);
+
+  // Phase chips
+  const phaseChip = {
+    live: { text: "MINTING NOW LIVE", className: "from-violet-500 to-fuchsia-500" },
+    upcoming: { text: "MINT STARTS SOON", className: "from-amber-500 to-pink-500" },
+    paused: { text: "MINT PAUSED", className: "from-zinc-500 to-zinc-700" },
+    soldout: { text: "SOLD OUT", className: "from-emerald-500 to-teal-500" },
+    ended: { text: "MINT ENDED", className: "from-zinc-500 to-zinc-700" },
+  }[phase];
+
+  // Button state
+  const isDisabled =
+    phase === "paused" || phase === "soldout" || phase === "ended" || phase === "upcoming";
+
   return (
-    <section id="mint" className="scroll-mt-24 border-t py-16 dark:border-neutral-900 bg-gradient-to-b from-white to-zinc-50 dark:from-zinc-950 dark:to-black">
-      <div className="mx-auto max-w-6xl px-4">
-        <div className="mb-6 flex flex-wrap items-end justify-between gap-3">
-          <h2 className="text-2xl font-bold">Mint</h2>
-          <Supply />
-        </div>
+    <section
+      id="mint"
+      className="scroll-mt-24 py-20 bg-gradient-to-b from-white to-zinc-50 dark:from-zinc-950 dark:to-black"
+      aria-labelledby="mint-title"
+    >
+      <div className="mx-auto max-w-7xl px-4">
+        {/* Header */}
+        <header className="text-center mb-12">
+          <span
+            className={`inline-flex items-center px-4 py-2 rounded-full bg-gradient-to-r ${phaseChip.className} text-white text-sm font-medium shadow-lg mb-6 font-tech`}
+            role="status"
+          >
+            <span className="mr-2">{phase === "live" ? "🔑" : phase === "upcoming" ? "⏳" : "ℹ️"}</span>
+            {phaseChip.text}
+          </span>
 
-        <div className="grid grid-cols-1 gap-8 md:grid-cols-[minmax(0,420px)_minmax(0,1fr)]">
-          {/* Mint panel */}
-          <div className="rounded-3xl border p-6 dark:border-neutral-800">
-            <p className="text-sm opacity-80">{description}</p>
-            
-            {/* Features list */}
-            <div className="mt-4 space-y-2">
-              {features.slice(0, 3).map((feature, index) => (
-                <div key={index} className="flex items-center gap-2 text-sm opacity-80">
-                  <div className="h-1.5 w-1.5 rounded-full bg-current"></div>
-                  {feature}
-                </div>
-              ))}
-            </div>
+          <h2 id="mint-title" className="text-4xl md:text-5xl font-bold font-pixel mb-4">
+            {title}
+          </h2>
 
-            <div className="mt-5">
-              <MintButton
-                onMintSuccess={(mint) => console.log('Minted:', mint)}
-              />
-            </div>
-          </div>
+          <p className="text-lg text-gray-600 dark:text-gray-300 max-w-2xl mx-auto font-cosmic">
+            {description}
+          </p>
+        </header>
 
-          {/* Mint preview */}
-          <div className="rounded-3xl border p-6 dark:border-neutral-800">
-            <h3 className="text-base font-semibold mb-4">Preview</h3>
-            
-            {mintGif ? (
-              <div className="overflow-hidden rounded-2xl border dark:border-neutral-800">
-                <img
-                  src={mintGif}
-                  alt="Mint Preview"
-                  className="h-full w-full object-cover"
-                />
-              </div>
-            ) : mintImage ? (
-              <div className="overflow-hidden rounded-2xl border dark:border-neutral-800">
+        {/* Main */}
+        <div className="grid gap-10 lg:grid-cols-[480px_auto] xl:grid-cols-[520px_auto]">
+          {/* Preview (sticky on desktop) */}
+          <aside className="bg-white dark:bg-zinc-900 rounded-3xl border border-gray-200 dark:border-zinc-800 p-6 shadow-lg lg:sticky lg:top-28">
+            <h3 className="text-xl font-semibold font-retro mb-3 text-center">Preview</h3>
+
+            <div className="overflow-hidden rounded-2xl border border-gray-200 dark:border-zinc-800">
+              {mintGif ? (
+                // GIF fallback uses <img> to preserve animation
+                <img src={mintGif} alt="MetaMartian preview" className="w-full h-auto object-cover" />
+              ) : mintImage ? (
                 <Image
                   src={mintImage}
-                  alt="Mint Preview"
-                  width={400}
-                  height={400}
-                  className="h-full w-full object-cover"
+                  alt="MetaMartian preview"
+                  width={800}
+                  height={800}
+                  className="w-full h-auto object-cover"
+                  priority
                 />
+              ) : (
+                <div className="aspect-square bg-gradient-to-br from-purple-400 via-pink-400 to-blue-400 flex items-center justify-center">
+                  <div className="text-center text-white">
+                    <div className="text-6xl mb-2">🛸</div>
+                    <div className="font-pixel text-sm">Your MetaMartian</div>
+                  </div>
+                </div>
+              )}
+            </div>
+
+            {/* Secondary info under preview */}
+            <dl className="mt-4 grid grid-cols-2 gap-2 text-sm">
+              <div className="rounded-xl border dark:border-neutral-800 p-3">
+                <dt className="opacity-60">Price</dt>
+                <dd className="font-tech">{priceSolFmt} SOL{priceUsd ? ` · ~$${priceUsd}` : ""}</dd>
               </div>
-            ) : (
-              <div className="grid place-items-center rounded-2xl border p-8 text-sm opacity-60 dark:border-neutral-800 bg-gradient-to-br from-purple-400 to-pink-500 aspect-square">
-                <div className="text-6xl">🚀</div>
+              <div className="rounded-xl border dark:border-neutral-800 p-3">
+                <dt className="opacity-60">Est. Fee</dt>
+                <dd className="font-tech">{feeSolFmt} SOL{feeUsd ? ` · ~$${feeUsd}` : ""}</dd>
               </div>
-            )}
+            </dl>
+          </aside>
+
+          {/* Mint panel */}
+          <div className="bg-white dark:bg-zinc-900 rounded-3xl border border-gray-200 dark:border-zinc-800 p-8 shadow-lg max-w-xl mx-auto lg:self-center lg:mt-6 overflow-hidden">
+            <div className="flex flex-col gap-6 justify-center min-h-[400px]">
+              {/* Compact stats ribbon */}
+              <div className="grid gap-3 sm:grid-cols-3">
+                <div className="rounded-xl border dark:border-neutral-800 p-4">
+                  <div className="text-xs opacity-60">Status</div>
+                  <div className="font-medium">
+                    {phase === "upcoming" && startsAtIso ? (
+                      <span className="font-tech">
+                        Starts {new Date(startsAtIso).toLocaleString()}
+                      </span>
+                    ) : (
+                      phase.toUpperCase()
+                    )}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border dark:border-neutral-800 p-4">
+                  <div className="text-xs opacity-60">Price</div>
+                  <div className="font-tech font-semibold">
+                    {priceSolFmt} SOL{priceUsd ? <span className="opacity-70"> · ~${priceUsd}</span> : null}
+                  </div>
+                </div>
+
+                <div className="rounded-xl border dark:border-neutral-800 p-4">
+                  <div className="text-xs opacity-60">Supply</div>
+                  <div className="flex items-center gap-2">
+                    <Supply refreshTrigger={supplyRefreshTrigger} />
+                  </div>
+                </div>
+              </div>
+
+
+
+              {/* CTA */}
+              <div className="flex flex-col items-center gap-3">
+                <div className={isDisabled ? "opacity-50 pointer-events-none" : ""}>
+                  <MintButton
+                    variant="glow"
+                    fullWidth
+                    onMintSuccess={handleMintSuccess}
+                    onModalClose={handleMintSuccess}
+                  />
+                </div>
+              </div>
+
+              {/* Safety + links */}
+              <div className="flex flex-wrap items-center gap-3 text-xs opacity-70">
+                <span className="rounded-full border px-2 py-1 dark:border-neutral-800">
+                  Verified collection
+                </span>
+                <a
+                  href={`https://explorer.solana.com/address/${process.env.NEXT_PUBLIC_CANDY_MACHINE_ID || ''}`}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="underline hover:opacity-100"
+                >
+                  View on Explorer
+                </a>
+                <a
+                  href="/collection"
+                  className="underline hover:opacity-100"
+                >
+                  Browse full collection
+                </a>
+              </div>
+            </div>
           </div>
         </div>
 
-        {/* Additional info */}
-        {features.length > 3 && (
-          <div className="mt-8 rounded-3xl border p-6 dark:border-neutral-800">
-            <h3 className="text-lg font-semibold mb-4">What you get</h3>
-            <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3">
-              {features.slice(3).map((feature, index) => (
-                <div key={index + 3} className="flex items-center gap-2 text-sm opacity-80">
-                  <div className="h-1.5 w-1.5 rounded-full bg-current"></div>
-                  {feature}
-                </div>
+        {/* Benefits grid */}
+        {features?.length ? (
+          <div className="mt-10 rounded-3xl border border-gray-200 dark:border-zinc-800 p-6 bg-white dark:bg-zinc-900 shadow-lg">
+            <h3 className="text-lg font-semibold font-retro mb-4 text-center">Why mint a MetaMartian?</h3>
+            <ul className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
+              {features.map((f, i) => (
+                <li key={i} className="flex items-start gap-3 text-sm text-gray-700 dark:text-gray-300">
+                  <span className="mt-0.5 inline-block h-2 w-2 rounded-full bg-gradient-to-r from-purple-500 to-pink-500" />
+                  <span className="font-cosmic">{f}</span>
+                </li>
               ))}
-            </div>
+            </ul>
           </div>
-        )}
+        ) : null}
+
+        {/* Sticky mobile CTA */}
+        <div className="fixed inset-x-0 bottom-4 z-40 px-4 sm:hidden">
+          <div className="mx-auto max-w-md rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-zinc-900/80 backdrop-blur shadow-xl p-3 flex flex-col items-center gap-3">
+            <div className="text-sm font-tech text-center">
+              {priceSolFmt} SOL
+              {priceUsd ? <span className="opacity-70"> · ~${priceUsd}</span> : null}
+            </div>
+            <MintButton
+              variant="glow"
+              fullWidth={false}
+              onMintSuccess={handleMintSuccess}
+              onModalClose={handleMintSuccess}
+            />
+          </div>
+        </div>
       </div>
     </section>
   );

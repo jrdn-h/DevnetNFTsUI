@@ -24,14 +24,14 @@ export default function NftPreviewByAddress({ address }: { address: string }) {
     setErr(null);
     setLoading("Loading NFT…");
     
-    const waitForMetadata = async (tries = 24, delayMs = 500) => {
+    const waitForMetadata = async (tries = 12, delayMs = 1000) => {
       const mintPk = publicKey(address);
       const mdPda = findMetadataPda(umi, { mint: mintPk });
 
       for (let i = 0; i < tries; i++) {
         if (cancelled) return;
         
-        if (!cancelled) {
+        if (!cancelled && i > 0) {
           setLoading(`Loading NFT… (${i + 1}/${tries})`);
         }
         

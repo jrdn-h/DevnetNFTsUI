@@ -43,24 +43,50 @@ export default function StorySection({
     <section id="story" className="scroll-mt-24 border-t py-16 dark:border-neutral-900 bg-gradient-to-b from-white to-zinc-50 dark:from-zinc-950 dark:to-black">
       <div className="mx-auto grid max-w-6xl grid-cols-1 items-center gap-8 px-4 md:grid-cols-2">
         <div>
-          <h2 className="text-2xl font-bold">Story</h2>
+          <h2 className="text-2xl font-bold font-pixel">Story</h2>
           <p className="mt-3 max-w-prose opacity-80">
             {description}
           </p>
           
-          {/* Timeline items as simple cards */}
-          <div className="mt-6 space-y-4">
+          {/* Timeline items with GIFs */}
+          <div className="mt-6 space-y-6">
             {timeline.map((item, index) => (
-              <div key={index} className="rounded-2xl border p-4 dark:border-neutral-800">
-                <div className="flex items-center gap-3 mb-2">
-                  {item.year && (
-                    <span className="text-xs px-2 py-1 rounded-full bg-black text-white dark:bg-white dark:text-black font-medium">
-                      {item.year}
-                    </span>
+              <div key={index} className="rounded-2xl border p-6 dark:border-neutral-800">
+                <div className="flex flex-col sm:flex-row gap-4">
+                  {/* Timeline GIF */}
+                  {(item.gif || item.image) && (
+                    <div className="w-full sm:w-24 h-24 flex-shrink-0 overflow-hidden rounded-xl border dark:border-neutral-700">
+                      {item.gif ? (
+                        <img 
+                          src={item.gif} 
+                          alt={item.title} 
+                          className="h-full w-full object-cover" 
+                        />
+                      ) : item.image ? (
+                        <Image
+                          src={item.image}
+                          alt={item.title}
+                          width={96}
+                          height={96}
+                          className="h-full w-full object-cover"
+                        />
+                      ) : null}
+                    </div>
                   )}
-                  <h3 className="font-semibold">{item.title}</h3>
+                  
+                  {/* Timeline content */}
+                  <div className="flex-1">
+                    <div className="flex items-center gap-3 mb-2">
+                      {item.year && (
+                        <span className="text-xs px-2 py-1 rounded-full bg-black text-white dark:bg-white dark:text-black font-medium font-tech">
+                          {item.year}
+                        </span>
+                      )}
+                      <h3 className="font-semibold">{item.title}</h3>
+                    </div>
+                    <p className="text-sm opacity-80">{item.description}</p>
+                  </div>
                 </div>
-                <p className="text-sm opacity-80">{item.description}</p>
               </div>
             ))}
           </div>

@@ -62,16 +62,12 @@ export default function AboutSection({
                   <div className="text-8xl">🛸</div>
                 </div>
               )}
-              
-              {/* Decorative elements */}
-              <div className="absolute -top-6 -left-6 w-24 h-24 bg-gradient-to-r from-purple-400 to-pink-400 rounded-full opacity-80 animate-pulse"></div>
-              <div className="absolute -bottom-6 -right-6 w-32 h-32 bg-gradient-to-r from-blue-400 to-cyan-400 rounded-full opacity-60 animate-pulse delay-500"></div>
             </div>
           </div>
 
           {/* Content Side */}
           <div className="order-1 lg:order-2">
-            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 dark:text-white mb-6">
+            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 dark:text-white mb-6 font-pixel">
               {title}
             </h2>
             <p className="text-lg text-gray-600 dark:text-gray-300 mb-8 leading-relaxed">
@@ -83,23 +79,23 @@ export default function AboutSection({
               {features.map((feature, index) => (
                 <div
                   key={index}
-                  className="flex items-start space-x-4 p-6 bg-gray-50 dark:bg-zinc-800 rounded-xl hover:shadow-lg transition-shadow duration-200"
+                  className="flex items-start space-x-6 p-8 bg-gray-50 dark:bg-zinc-800 rounded-xl hover:shadow-lg transition-shadow duration-200"
                 >
                   {feature.image ? (
                     <Image
                       src={feature.image}
                       alt={feature.title}
-                      width={60}
-                      height={60}
+                      width={100}
+                      height={100}
                       className="flex-shrink-0 rounded-lg"
                     />
                   ) : (
-                    <div className="flex-shrink-0 w-12 h-12 bg-gradient-to-r from-purple-400 to-pink-400 rounded-lg flex items-center justify-center text-2xl">
+                    <div className="flex-shrink-0 w-24 h-24 bg-gradient-to-r from-purple-400 to-pink-400 rounded-lg flex items-center justify-center text-4xl">
                       {feature.icon}
                     </div>
                   )}
                   <div>
-                    <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2">
+                    <h3 className="text-xl font-semibold text-gray-900 dark:text-white mb-2 font-retro">
                       {feature.title}
                     </h3>
                     <p className="text-gray-600 dark:text-gray-300">

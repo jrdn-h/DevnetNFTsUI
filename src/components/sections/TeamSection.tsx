@@ -44,13 +44,16 @@ export default function TeamSection({
   ],
 }: TeamSectionProps) {
   return (
-    <section id="team" className="scroll-mt-24 border-t py-16 dark:border-neutral-900 bg-gradient-to-b from-white to-zinc-50 dark:from-zinc-950 dark:to-black">
-      <div className="mx-auto max-w-6xl px-4">
-        <h2 className="text-2xl font-bold">Team</h2>
-        <div className="mt-6 grid grid-cols-1 gap-6 sm:grid-cols-2">
+    <section id="team" className="scroll-mt-24 border-t py-24 dark:border-neutral-900 bg-gradient-to-b from-white to-zinc-50 dark:from-zinc-950 dark:to-black">
+      <div className="mx-auto max-w-7xl px-6">
+        <div className="text-center mb-16">
+          <h2 className="text-4xl md:text-5xl font-bold mb-4 font-pixel">{title}</h2>
+          <p className="text-lg md:text-xl opacity-80 max-w-3xl mx-auto">{description}</p>
+        </div>
+        <div className="grid grid-cols-1 gap-12 lg:grid-cols-2">
           {members.map((member, index) => (
-            <div key={index} className="flex items-center gap-4 rounded-3xl border p-4 dark:border-neutral-800">
-              <div className="h-20 w-20 overflow-hidden rounded-2xl border dark:border-neutral-800">
+            <div key={index} className="flex flex-col sm:flex-row items-center sm:items-start gap-8 rounded-3xl border p-8 dark:border-neutral-800 hover:shadow-lg transition-shadow">
+              <div className="h-32 w-32 sm:h-40 sm:w-40 overflow-hidden rounded-3xl border dark:border-neutral-800 flex-shrink-0">
                 {member.gif ? (
                   <img 
                     src={member.gif} 
@@ -61,28 +64,29 @@ export default function TeamSection({
                   <Image
                     src={member.image}
                     alt={member.name}
-                    width={80}
-                    height={80}
+                    width={160}
+                    height={160}
                     className="h-full w-full object-cover"
                   />
                 ) : (
-                  <div className="h-full w-full bg-gradient-to-br from-purple-400 to-pink-500 flex items-center justify-center text-3xl">
+                  <div className="h-full w-full bg-gradient-to-br from-purple-400 to-pink-500 flex items-center justify-center text-5xl">
                     {index === 0 ? '👨‍🎨' : '👩‍💻'}
                   </div>
                 )}
               </div>
-              <div className="min-w-0">
-                <div className="text-lg font-semibold">{member.name}</div>
-                <p className="text-sm opacity-80">{member.role}</p>
-                <div className="mt-1 flex gap-3 text-sm opacity-80">
+              <div className="min-w-0 text-center sm:text-left">
+                <div className="text-2xl md:text-3xl font-bold mb-2">{member.name}</div>
+                <p className="text-lg md:text-xl font-medium opacity-90 mb-4">{member.role}</p>
+                <p className="text-base md:text-lg opacity-80 mb-6 leading-relaxed">{member.description}</p>
+                <div className="flex justify-center sm:justify-start gap-4 text-base opacity-80">
                   {member.social?.twitter && (
-                    <a href={member.social.twitter} className="underline">X</a>
+                    <a href={member.social.twitter} className="hover:text-blue-500 transition-colors font-medium">X</a>
                   )}
                   {member.social?.linkedin && (
-                    <a href={member.social.linkedin} className="underline">LinkedIn</a>
+                    <a href={member.social.linkedin} className="hover:text-blue-600 transition-colors font-medium">LinkedIn</a>
                   )}
                   {member.social?.github && (
-                    <a href={member.social.github} className="underline">GitHub</a>
+                    <a href={member.social.github} className="hover:text-gray-700 dark:hover:text-gray-300 transition-colors font-medium">GitHub</a>
                   )}
                 </div>
               </div>
