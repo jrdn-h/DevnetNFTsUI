@@ -781,41 +781,49 @@ export default function MintButton({
           </button>
         )}
 
-        {/* Quantity picker (centered + editable) */}
-        <div className="flex items-center justify-center gap-2">
-          <button
-            onClick={() => setQty((q) => Math.max(1, q - 1))}
-            disabled={busy || qty <= 1}
-            className="h-9 w-9 rounded-lg border border-black/10 bg-white text-black dark:border-white/10 dark:bg-zinc-900 dark:text-white disabled:opacity-50"
-            aria-label="Decrease quantity"
-          >
-            −
-          </button>
+        {/* Quantity picker (number perfectly centered) */}
+        <div className="w-full">
+          <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-2">
+            {/* – on the left, aligned to the right side of its column */}
+            <button
+              onClick={() => setQty((q) => Math.max(1, q - 1))}
+              disabled={busy || qty <= 1}
+              className="justify-self-end h-9 w-9 rounded-lg border border-black/10 bg-white text-black dark:border-white/10 dark:bg-zinc-900 dark:text-white disabled:opacity-50"
+              aria-label="Decrease quantity"
+            >
+              −
+            </button>
 
-          <input
-            type="number"
-            inputMode="numeric"
-            min={1}
-            max={maxQty ?? 100}
-            value={qty}
-            onChange={(e) => {
-              const n = parseInt(e.target.value || "0", 10);
-              if (Number.isFinite(n)) setQty((_) => clamp(n, 1, maxQty ?? 100));
-            }}
-            className="h-9 w-16 rounded-lg border border-black/10 bg-white text-black dark:border-white/10 dark:bg-zinc-900 dark:text-white text-center font-semibold tabular-nums"
-            aria-label="Quantity to mint"
-          />
+            {/* The number (editable) sits in the AUTO middle column, which is centered in the grid */}
+            <input
+              type="number"
+              inputMode="numeric"
+              min={1}
+              max={maxQty ?? 100}
+              value={qty}
+              onChange={(e) => {
+                const n = parseInt(e.target.value || "0", 10);
+                if (Number.isFinite(n)) setQty(Math.min(Math.max(n, 1), maxQty ?? 100));
+              }}
+              className="justify-self-center h-9 w-20 rounded-lg border border-black/10 bg-white text-black dark:border-white/10 dark:bg-zinc-900 dark:text-white text-center font-semibold tabular-nums"
+              aria-label="Quantity to mint"
+            />
 
-          <button
-            onClick={() => setQty((q) => Math.min(maxQty ?? 100, q + 1))}
-            disabled={busy || (maxQty != null && qty >= maxQty)}
-            className="h-9 w-9 rounded-lg border border-black/10 bg-white text-black dark:border-white/10 dark:bg-zinc-900 dark:text-white disabled:opacity-50"
-            aria-label="Increase quantity"
-          >
-            +
-          </button>
+            {/* + on the right, aligned to the left side of its column */}
+            <button
+              onClick={() => setQty((q) => Math.min(maxQty ?? 100, q + 1))}
+              disabled={busy || (maxQty != null && qty >= maxQty)}
+              className="justify-self-start h-9 w-9 rounded-lg border border-black/10 bg-white text-black dark:border-white/10 dark:bg-zinc-900 dark:text-white disabled:opacity-50"
+              aria-label="Increase quantity"
+            >
+              +
+            </button>
+          </div>
 
-          <div className="text-xs opacity-70">{maxQty != null ? `Max ${maxQty}` : "—"}</div>
+          {/* Optional: max note under the control, also centered */}
+          <div className="mt-1 text-center text-xs opacity-70">
+            {maxQty != null ? `Max ${Math.min(maxQty, 100)}` : "—"}
+          </div>
         </div>
 
         {/* Cost estimation */}
