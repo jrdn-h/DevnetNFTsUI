@@ -1,0 +1,2 @@
+{"v":0,"name":"sugar","msg":"Lend me some sugar, I am your neighbor.","level":30,"hostname":"DESKTOP-IRJ3725","pid":12964,"time":"2025-08-29T22:36:11.5528301Z","target":"sugar","line":124,"file":"src/main.rs"}
+{"v":0,"name":"sugar","msg":"Failed to parse candy machine id: guard","level":50,"hostname":"DESKTOP-IRJ3725","pid":12964,"time":"2025-08-29T22:36:11.5638978Z","target":"sugar_cli::show::process","line":60,"file":"src\\show\\process.rs"}

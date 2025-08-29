@@ -20,6 +20,8 @@ const normVal = (v: any) =>
     ? JSON.stringify(v)
     : String(v);
 
+
+
 export default function MetaMartianCollectionGallery({
   pageStep = 60,
   initialVisible = 120,
@@ -54,6 +56,24 @@ export default function MetaMartianCollectionGallery({
   const loadDB = useCollectionDB((s) => s.load);
   const dbLoading = useCollectionDB((s) => s.loading);
   const dbError = useCollectionDB((s) => s.error);
+
+  // NEW: persistent highlight that survives until user hovers the card
+  const [stickyHighlight, setStickyHighlight] = useState<string | null>(null);
+
+  // Score computation cache
+  const scoreCacheRef = useRef<Map<string, number>>(new Map());
+
+  // Background scroll follower: listens to modal nav events
+  useEffect(() => {
+    const onScrollToCard = (e: any) => {
+      const key: string | undefined = e?.detail?.indexKey;
+      if (!key) return;
+      const el = document.getElementById(`mm-card-${key}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+    window.addEventListener("mm:scroll-to-card", onScrollToCard as EventListener);
+    return () => window.removeEventListener("mm:scroll-to-card", onScrollToCard as EventListener);
+  }, []);
 
   // Resolve collection mint from CM on-chain if not provided
   useEffect(() => {
@@ -206,6 +226,66 @@ export default function MetaMartianCollectionGallery({
     }));
   }, [filteredSorted]);
 
+  // Memoize sorted scores once (for rank fallback)
+  const sortedScoresDesc = useMemo(() => {
+    const arr = (db?.items ?? [])
+      .map((x) => Number(x.score))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => b - a);
+    return arr;
+  }, [db]);
+
+  // Fast single-item score (fallback) from DB traits
+  const computeScoreFromTraits = useCallback((attrs: any[]): number => {
+    if (!db) return NaN;
+    const total = Math.max(1, db.items.length);
+    let sum = 0;
+    const traitsMap = db.traits || {};
+    for (const tt of Object.keys(traitsMap)) {
+      const found = attrs?.find?.((a: any) => {
+        const s = (a?.trait_type ?? "—").toString().trim();
+        return s.length ? s === tt : "—" === tt;
+      });
+      const val = found?.value == null || found?.value === "" ? "None"
+        : typeof found.value === "object" ? JSON.stringify(found.value) : String(found.value);
+      const count = traitsMap[tt]?.[val] ?? 0;
+      sum += total / Math.max(1, count);
+    }
+    return sum;
+  }, [db]);
+
+  // Get display score/rank with coercion + cached fallback + binary search
+  const getDisplayScoreRank = useCallback((it: CollectionDB["items"][number]) => {
+    // coerce score
+    let score = typeof it.score === "number" ? it.score : Number(it.score);
+    if (!Number.isFinite(score)) {
+      const cached = scoreCacheRef.current.get(it.index);
+      if (cached != null) {
+        score = cached;
+      } else {
+        score = computeScoreFromTraits(it.attributes || []);
+        if (Number.isFinite(score)) {
+          scoreCacheRef.current.set(it.index, score);
+        }
+      }
+    }
+
+    // coerce rank or derive from sorted scores (1 = highest)
+    let rank = typeof it.rank === "number" ? it.rank : Number(it.rank);
+    if (!Number.isFinite(rank) && sortedScoresDesc.length && Number.isFinite(score)) {
+      // count of scores > my score (binary search)
+      const arr = sortedScoresDesc;
+      let lo = 0, hi = arr.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (arr[mid] > score) lo = mid + 1; else hi = mid;
+      }
+      rank = lo + 1;
+    }
+
+    return { score, rank };
+  }, [computeScoreFromTraits, sortedScoresDesc]);
+
   // Infinite scroll growth
   useEffect(() => {
     if (!sentinelRef.current) return;
@@ -230,15 +310,13 @@ export default function MetaMartianCollectionGallery({
     const i = posByIndex.get(String(nZero));
     if (i == null) return;
 
-    // Ensure card is mounted
     setVisible((v) => Math.max(v, i + Math.max(24, pageStep)));
-
     const item = filteredSorted[i];
 
     // Preload hero image (non-blocking)
     if (item?.image) { const img = new Image(); img.src = item.image; }
 
-    // Open immediately (no heavy mapping here — it's memoized)
+    // Open quickly with prebuilt items
     openWithData({
       items: modalItems,
       initialIndex: i,
@@ -250,14 +328,14 @@ export default function MetaMartianCollectionGallery({
         overall: db.overall,
         traitAvg: db.traitAvg,
       },
+      // Sticky highlight is applied AFTER closing the modal
+      onModalClose: () => setStickyHighlight(item.index),
     });
 
-    // Smoothly scroll the grid in the next frame (doesn't block open)
+    // Optionally center it behind the modal immediately
     requestAnimationFrame(() => {
       const el = document.getElementById(`mm-card-${item.index}`);
       if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
-      setHighlight(item.index);
-      setTimeout(() => setHighlight(null), 1200);
     });
   }, [searchNum, db, posByIndex, filteredSorted, modalItems, openWithData, pageStep]);
 
@@ -421,10 +499,19 @@ export default function MetaMartianCollectionGallery({
               db &&
               shown.map((it) => {
                 const isMinted = mintedSet.has(it.index);
+                const isHighlighted = stickyHighlight === it.index || highlight === it.index; // combine flash + sticky
+
+                // Get display score/rank with coercion + cached fallback + binary search
+                const { score, rank } = getDisplayScoreRank(it);
+
                 return (
                   <button
                     key={it.index}
                     id={`mm-card-${it.index}`}
+                    onMouseEnter={() => {
+                      // clear sticky highlight on hover of that card
+                      if (stickyHighlight === it.index) setStickyHighlight(null);
+                    }}
                     onPointerEnter={() => {
                       if (it.image) {
                         const img = new Image();
@@ -439,9 +526,9 @@ export default function MetaMartianCollectionGallery({
                     }}
                     onClick={() => {
                       startTransition(() => {
-                        const i = posByIndex.get(it.index) ?? 0;
+                        const i = posByIndex.get(it.index) ?? 0; // use your memoized posByIndex
                         openWithData({
-                          items: modalItems,
+                          items: modalItems,                     // use your memoized modalItems
                           initialIndex: i,
                           title: "MetaMartian details",
                           collectionMint: db!.collectionMint,
@@ -451,11 +538,12 @@ export default function MetaMartianCollectionGallery({
                             overall: db!.overall,
                             traitAvg: db!.traitAvg,
                           },
+                          // NOTE: no sticky highlight on regular clicks (only for "Find by number")
                         });
                       });
                     }}
                     className={`group relative overflow-hidden rounded-xl border text-left transition hover:shadow-md dark:border-neutral-800 ${
-                      highlight === it.index ? "ring-2 ring-emerald-400" : ""
+                      isHighlighted ? "ring-2 ring-emerald-400" : ""
                     }`}
                     title="View details"
                   >
@@ -482,10 +570,13 @@ export default function MetaMartianCollectionGallery({
                         fetchPriority="low"
                       />
                     </div>
+                    {/* text */}
                     <div className="p-2">
                       <div className="truncate text-sm font-medium">{it.name}</div>
-                      <div className="truncate text-[10px] opacity-60">
-                        Score: {Math.round(it.score).toLocaleString()} · #{it.rank}
+
+                      {/* RARITY LINE — always visible with coercion + cached fallback */}
+                      <div className="text-[10px] opacity-60 whitespace-nowrap">
+                        Score: {Number.isFinite(score) ? Math.round(score).toLocaleString() : "—"} · #{Number.isFinite(rank) ? rank : "—"}
                       </div>
                     </div>
                   </button>

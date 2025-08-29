@@ -5,6 +5,7 @@ import dynamic from "next/dynamic";
 import useUmiStore from "@/store/useUmiStore";
 import useMetaMartianReveal from "@/hooks/useMetaMartianReveal";
 import { useCollectionDB } from "@/store/useCollectionDB";
+import { scoreFromAttrs } from "@/lib/rarity/utils";
 
 
 import { publicKey } from "@metaplex-foundation/umi";
@@ -26,13 +27,6 @@ type Card = {
   attributes?: any[];
   rarityScore?: number;
   rarityRank?: number;
-};
-
-type RarityIndex = {
-  total: number;
-  traits: Record<string, Record<string, number>>;
-  overall?: { avgObserved: number; minObserved: number; maxObserved: number };
-  traitAvg?: Record<string, number>;
 };
 
 type Props = {
@@ -68,6 +62,18 @@ export default function MetaMartianGallery({
   // Reduced motion support
   const prefersReduced = typeof window !== "undefined" &&
     window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
+
+  // Background scroll follower: listens to modal nav events
+  useEffect(() => {
+    const onScrollToCard = (e: any) => {
+      const key: string | undefined = e?.detail?.indexKey;
+      if (!key) return;
+      const el = document.getElementById(`mm-card-${key}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    };
+    window.addEventListener("mm:scroll-to-card", onScrollToCard as EventListener);
+    return () => window.removeEventListener("mm:scroll-to-card", onScrollToCard as EventListener);
+  }, []);
 
   useEffect(() => setMounted(true), []);
   const endpoint = useMemo(
@@ -175,8 +181,30 @@ export default function MetaMartianGallery({
                   attributes = Array.isArray(json?.attributes) ? json.attributes : undefined;
                 } catch {}
               }
-              // Look up item in database using metadata URI
+              // dbItem by metadata URI (may be undefined if gateway/uri differs)
               const dbItem = uri ? getItemByMetadata(uri) : undefined;
+
+              // Snapshot from DB (for fallback calc)
+              const snap = db ? {
+                total: db.items.length,
+                traits: db.traits,
+                overall: db.overall,
+                traitAvg: db.traitAvg,
+              } : undefined;
+
+              // Compute fallback score from attrs + snapshot when missing
+              const computedScore = Number.isFinite(dbItem?.score)
+                ? Number(dbItem!.score)
+                : (attributes && snap) ? scoreFromAttrs(attributes, snap) : NaN;
+
+              // Compute fallback rank from global score list when needed (1 = rarest)
+              let computedRank: number | undefined = Number.isFinite(dbItem?.rank) ? Number(dbItem!.rank) : undefined;
+              if (!Number.isFinite(computedRank) && Number.isFinite(computedScore) && db) {
+                const arr = db.items.map(i => Number(i.score)).filter(Number.isFinite).sort((a, b) => b - a);
+                let lo = 0, hi = arr.length;
+                while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] > computedScore) lo = mid + 1; else hi = mid; }
+                computedRank = lo + 1;
+              }
 
               cards.push({
                 mint: mintStr,
@@ -184,8 +212,8 @@ export default function MetaMartianGallery({
                 image,
                 uri,
                 attributes,
-                rarityScore: dbItem?.score,
-                rarityRank: dbItem?.rank,
+                rarityScore: computedScore,
+                rarityRank: computedRank,
               });
             } catch {}
           })
@@ -268,13 +296,19 @@ export default function MetaMartianGallery({
                   e.preventDefault();
                   // One-tap open without blocking main thread
                   startTransition(() => {
-                    const itemsForModal = items.map((x) => ({
-                      name: x.name,
-                      image: x.image,
-                      metadataUri: x.uri,    // reveal will fetch attrs
-                      mint: x.mint,
-                      indexKey: x.mint,      // stable key for caching & shared-element
-                    }));
+                    const itemsForModal = items.map((x) => {
+                      const dbItem = x.uri ? getItemByMetadata(x.uri) : undefined;
+                      return {
+                        indexKey: x.mint,        // stable for scroll-follow
+                        name: x.name,
+                        image: x.image,
+                        metadataUri: x.uri,
+                        attributes: x.attributes, // might be undefined -> modal lazily fetches
+                        score: Number(x.rarityScore ?? dbItem?.score ?? NaN),
+                        rank: Number(x.rarityRank ?? dbItem?.rank ?? NaN),
+                        mint: x.mint,
+                      };
+                    });
                     const modalIndex = Math.max(0, items.findIndex((x2) => x2.mint === it.mint));
 
                     openWithData({
@@ -282,7 +316,6 @@ export default function MetaMartianGallery({
                       initialIndex: modalIndex,
                       title: "Your MetaMartian",
                       collectionMint: collectionMint ?? undefined,
-                      // ✅ snapshot fixes the 100% / score=1 issue
                       rarityIndexSnapshot: db ? {
                         total: db.items.length,
                         traits: db.traits,
@@ -311,19 +344,10 @@ export default function MetaMartianGallery({
                 </div>
                 <div className="p-2">
                   <div className="text-sm font-medium truncate">{it.name}</div>
-                  <div className="flex items-center justify-between gap-2">
-                    <div className="text-[10px] opacity-60 truncate">{it.mint}</div>
-                    {it.rarityRank && (
-                      <div className="text-[10px] font-semibold text-purple-600 dark:text-purple-400 shrink-0">
-                        #{it.rarityRank.toLocaleString()} rarest
-                      </div>
-                    )}
+                  <div className="text-[10px] opacity-60 truncate">{it.mint.slice(0, 8)}…{it.mint.slice(-8)}</div>
+                  <div className="text-[10px] opacity-60 mt-1 whitespace-nowrap">
+                    Score: {Number.isFinite(it.rarityScore) ? Math.round(it.rarityScore!).toLocaleString() : "—"} · #{Number.isFinite(it.rarityRank) ? it.rarityRank : "—"}
                   </div>
-                  {it.rarityScore && (
-                    <div className="text-[10px] opacity-60 mt-1">
-                      Score: {Math.round(it.rarityScore).toLocaleString()}
-                    </div>
-                  )}
                 </div>
               </button>
             ))}

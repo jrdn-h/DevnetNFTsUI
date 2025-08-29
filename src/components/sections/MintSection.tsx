@@ -185,6 +185,7 @@ export default function MintSection({
                   <MintButton
                     variant="glow"
                     fullWidth
+                    overlayGifSrc="/minting.gif"
                     onMintSuccess={handleMintSuccess}
                     onModalClose={handleMintSuccess}
                   />
@@ -240,6 +241,7 @@ export default function MintSection({
             <MintButton
               variant="glow"
               fullWidth={false}
+              overlayGifSrc="/minting.gif"
               onMintSuccess={handleMintSuccess}
               onModalClose={handleMintSuccess}
             />

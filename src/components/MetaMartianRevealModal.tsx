@@ -3,13 +3,9 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 
 
-type Attribute = { trait_type?: string; value?: unknown };
-type RarityIndex = {
-  total: number;
-  traits: Record<string, Record<string, number>>;
-  overall?: { avgObserved: number; minObserved: number; maxObserved: number };
-  traitAvg?: Record<string, number>;
-};
+import type { RevealItem, RaritySnapshot } from "@/types/reveal";
+import { traitStatsFrom, scoreFromAttrs } from "@/lib/rarity/utils";
+
 type TraitStat = { traitType: string; value: string; pct?: number; score?: number; count?: number };
 
 // normalize trait keys exactly like collection builder
@@ -24,21 +20,6 @@ const normVal = (v: any) =>
     ? JSON.stringify(v)
     : String(v);
 
-// (Optional safety) coerce total if snapshot arrives without it
-const coerceIndex = (idx?: RarityIndex) => {
-  if (!idx) return undefined;
-  let total = Number(idx.total || 0);
-  if (!total || total <= 0) {
-    let best = 0;
-    for (const tt of Object.keys(idx.traits || {})) {
-      const sum = Object.values(idx.traits[tt] || {}).reduce((a, b) => a + Number(b || 0), 0);
-      if (sum > best) best = sum;
-    }
-    total = best || 1;
-  }
-  return { ...idx, total };
-};
-
 // helpers for shared-element transitions
 const isInViewport = (el: Element) => {
   const r = el.getBoundingClientRect();
@@ -48,76 +29,25 @@ const isInViewport = (el: Element) => {
   return r.bottom >= 0 && r.right >= 0 && r.top <= vh && r.left <= vw;
 };
 
-// ADD
-type MintedItem = {
-  name?: string;
-  image?: string;
-  mint?: string;
-  txSig?: string | null;
-  attributes?: Attribute[];
-  rarityIndexSnapshot?: RarityIndex;
-  yourScore?: number;
-  rarityRank?: number;
-  indexKey?: string;        // stable key (e.g., catalog index or mint)
-  metadataUri?: string;     // where to fetch attributes if they weren't passed
-};
-
 type Props = {
   open: boolean;
   onClose: () => void;
-  name?: string;
-  image?: string;
-  mint?: string;
-  txSig?: string | null;
-  collectionMint?: string;
-  attributes?: Attribute[];
-  rarityIndexUrlOverride?: string;
-  /** Optional explicit title override */
   title?: string;
-  rarityIndexSnapshot?: RarityIndex;
-  yourScore?: number;
-  /** Optional callback when modal closes - useful for refreshing supply after minting */
-  onModalClose?: () => void;
-  /** Optional rarity rank (1-based) when known from sorting */
-  rarityRank?: number;
-  /** Optional: show multiple newly minted items in one modal */
-  items?: MintedItem[];
-  /** Optional: start index when items are provided */
-  initialIndex?: number;
+  items: RevealItem[];        // ← unified
+  initialIndex?: number;      // ← unified
+  collectionMint?: string;
+  rarityIndexSnapshot?: RaritySnapshot; // ← unified
 };
 
 export default function MetaMartianRevealModal({
-  open,
-  onClose,
-  name = "MetaMartian",
-  image,
-  mint,
-  txSig,
+  open, onClose, title,
+  items, initialIndex = 0,
   collectionMint,
-  attributes,
-  rarityIndexUrlOverride,
-  title,
   rarityIndexSnapshot,
-  yourScore,
-  onModalClose,
-  rarityRank: providedRank,
-  items,
-  initialIndex,
 }: Props) {
-  const [traitStats, setTraitStats] = useState<TraitStat[]>([]);
-  const [yourOverall, setYourOverall] = useState<number | null>(null);
-  const [avgOverall, setAvgOverall] = useState<number | null>(null);
-  const [maxOverall, setMaxOverall] = useState<number | null>(null);
-  const [minOverall, setMinOverall] = useState<number | null>(null);
-  const [avgTraitScoreByType, setAvgTraitScoreByType] = useState<Record<string, number>>({});
-  const [loadingRarity, setLoadingRarity] = useState<boolean>(false);
   const [rarityErr, setRarityErr] = useState<string | null>(null);
 
-  // ADD caches
-  const attrCacheRef = useRef(new Map<string, Attribute[]>());
 
-  // ADD local override attrs so we can compute when the props didn't include attributes
-  const [lazyAttrs, setLazyAttrs] = useState<Attribute[] | null>(null);
 
   // (Optional but robust) Force a fresh render per open
   const [sessionKey, setSessionKey] = useState(0);
@@ -132,47 +62,30 @@ export default function MetaMartianRevealModal({
   // Shared-element return control
   const [useSharedReturn, setUseSharedReturn] = useState(true);
 
-  // ADD state and derived item
-  const [index, setIndex] = useState<number>(initialIndex ?? 0);
-  const multi = Array.isArray(items) && items.length > 0;
-  const active = useMemo(
-    () => (multi ? items![Math.max(0, Math.min(index, items!.length - 1))] : null),
-    [multi, items, index]
-  );
+  const [index, setIndex] = useState(initialIndex);
 
-  // Use active item when present, else fall back to single props
-  const effName = active?.name ?? name;
-  const effImage = active?.image ?? image;
-  const effMint = active?.mint ?? mint;
-  const effTxSig = active?.txSig ?? txSig;
-  const effAttributes = active?.attributes ?? attributes;
-  const effRarityIndexSnapshot = active?.rarityIndexSnapshot ?? rarityIndexSnapshot;
-  const effYourScore = active?.yourScore ?? yourScore;
-  const effRank = (active?.rarityRank ?? providedRank) || undefined;
+  // Active item
+  const active = items[Math.max(0, Math.min(items.length - 1, index))];
 
-  // Use the effective snapshot everywhere in the effect
-  const effectiveRaritySnapshot = effRarityIndexSnapshot;
+  // Local attrs that can lazily hydrate from metadataUri, reset on item change
+  const [loadedAttrs, setLoadedAttrs] = useState<any[]>(active?.attributes ?? []);
+  useEffect(() => { setLoadedAttrs(active?.attributes ?? []); }, [active?.indexKey]);
 
   // Helper to resolve a stable key for caching
   const activeKey = useMemo(() => {
-    const base = active?.indexKey || active?.mint || active?.metadataUri || effName || "item";
+    const base = active?.indexKey || active?.mint || active?.metadataUri || active?.name || "item";
     return `${collectionMint ?? ""}::${String(base)}`;
-  }, [active, effName, collectionMint]);
+  }, [active, collectionMint]);
 
   // Reset nav + lazy state whenever the modal opens with a new dataset or index
   useEffect(() => {
     if (!open) return;
 
     // start at the requested item
-    setIndex(initialIndex ?? 0);
+    setIndex(initialIndex);
 
     // clear lazy-loaded attrs and transient UI state
-    setLazyAttrs(null);
-    setTraitStats([]);
-    setYourOverall(null);
-    setAvgOverall(null);
-    setMinOverall(null);
-    setMaxOverall(null);
+    setLoadedAttrs(active?.attributes ?? []);
     setRarityErr(null);
   }, [open, initialIndex, items]);
 
@@ -181,27 +94,26 @@ export default function MetaMartianRevealModal({
     if (open) setSessionKey((k) => k + 1);
   }, [open, items, initialIndex]);
 
-  // Determine if we should use shared-element return
+  // keep background in sync
   useEffect(() => {
-    if (!open) return;
-    // resolve the card element by the same key you passed to items[index].indexKey
-    const key = active?.indexKey ?? active?.mint ?? activeKey;
-    const el = key ? document.getElementById(`mm-card-${key}`) : null;
-    setUseSharedReturn(!!el && isInViewport(el));
-  }, [open, active?.indexKey, active?.mint, activeKey]);
+    if (!open || !active?.indexKey) return;
+    requestAnimationFrame(() => {
+      window.dispatchEvent(new CustomEvent("mm:scroll-to-card", { detail: { indexKey: active.indexKey } }));
+    });
+  }, [open, active?.indexKey]);
 
   // Image ready state for smooth loading
   useEffect(() => {
     let cancelled = false;
     setImgReady(false);
-    if (!effImage) return;
+    if (!active?.image) return;
     const i = new Image();
-    i.src = effImage;
+    i.src = active.image;
     (i.decode?.() ?? Promise.resolve()).catch(() => {}).finally(() => {
       if (!cancelled) setImgReady(true);
     });
     return () => { cancelled = true; };
-  }, [effImage]);
+  }, [active?.image]);
 
   // Backdrop ref (for outside click)
   const backdropRef = useRef<HTMLDivElement>(null);
@@ -228,25 +140,23 @@ export default function MetaMartianRevealModal({
     const onKey = (e: KeyboardEvent) => {
       if (e.key === "Escape") {
         onClose();
-        onModalClose?.();
         return;
       }
-      // OPTIONAL: prev/next when multiple items are shown
-      if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && Array.isArray(items) && items.length > 1) {
+      // prev/next when multiple items are shown
+      if ((e.key === "ArrowLeft" || e.key === "ArrowRight") && items.length > 1) {
         e.preventDefault();
         if (e.key === "ArrowLeft") setIndex((i) => Math.max(0, i - 1));
-        if (e.key === "ArrowRight") setIndex((i) => Math.min(items!.length - 1, i + 1));
+        if (e.key === "ArrowRight") setIndex((i) => Math.min(items.length - 1, i + 1));
       }
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [open, onClose, onModalClose, items]);
+  }, [open, onClose, items]);
 
   // Close on clicking outside the panel
   const onBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) {
       onClose();
-      onModalClose?.();
     }
   };
 
@@ -254,191 +164,58 @@ export default function MetaMartianRevealModal({
   const clusterParam = endpoint.includes("devnet") ? "?cluster=devnet" : endpoint.includes("testnet") ? "?cluster=testnet" : "";
 
   const rarityIndexUrl = useMemo(() => {
-    if (rarityIndexUrlOverride) return rarityIndexUrlOverride;
     if (process.env.NEXT_PUBLIC_RARITY_INDEX_URL) return process.env.NEXT_PUBLIC_RARITY_INDEX_URL;
     if (collectionMint) return `/rarity/${collectionMint}.json`;
     return undefined;
-  }, [rarityIndexUrlOverride, collectionMint]);
+  }, [collectionMint]);
 
-  // Lazy attribute loading effect
   useEffect(() => {
-    let cancelled = false;
+    let dead = false;
+    if ((loadedAttrs?.length ?? 0) > 0 || !active?.metadataUri) return;
     (async () => {
-      if (!open) return;
-
-      const haveAttrsFromProps = Array.isArray(effAttributes) && effAttributes.length > 0;
-      if (haveAttrsFromProps) return;
-
-      if (!attrCacheRef.current.has(activeKey)) {
-        // try lazy fetch via metadataUri
-        if (active?.metadataUri) {
-          try {
-            const res = await fetch(active.metadataUri, { cache: "no-store" });
-            const json = await res.json();
-            const got: Attribute[] = Array.isArray(json?.attributes) ? json.attributes : [];
-            if (!cancelled) {
-              attrCacheRef.current.set(activeKey, got);
-              setLazyAttrs(got);
-            }
-          } catch {/* ignore */}
-        }
-      }
-    })();
-    return () => { cancelled = true; };
-  }, [open, activeKey, active?.metadataUri, effAttributes]);
-
-  // OPTIONAL: Preload neighbors for snappy prev/next
-  useEffect(() => {
-    const preload = async (item?: MintedItem) => {
-      if (!item?.metadataUri) return;
-      const k = item.indexKey || item.mint || item.metadataUri;
-      if (!k || attrCacheRef.current.has(k)) return;
       try {
-        const r = await fetch(item.metadataUri, { cache: "no-store" });
+        const r = await fetch(active.metadataUri!, { cache: "no-store" });
         const j = await r.json();
-        const got: Attribute[] = Array.isArray(j?.attributes) ? j.attributes : [];
-        attrCacheRef.current.set(k, got);
-      } catch {/* ignore */}
-    };
-    if (multi) {
-      preload(items![index - 1]);
-      preload(items![index + 1]);
-    }
-  }, [multi, items, index]);
+        const got = Array.isArray(j?.attributes) ? j.attributes : [];
+        if (!dead) setLoadedAttrs(got);
+      } catch {}
+    })();
+    return () => { dead = true; };
+  }, [active?.metadataUri, loadedAttrs?.length]);
 
-  useEffect(() => {
-    let cancelled = false;
-    async function run() {
-      if (!open) return;
 
-      // gather attrs from props OR lazy OR cache; fetch if needed
-      const haveAttrsFromProps = Array.isArray(effAttributes) && effAttributes.length > 0;
-      const cached = attrCacheRef.current.get(activeKey);
-      const attrsToUse = haveAttrsFromProps ? effAttributes
-                         : cached ? cached
-                         : lazyAttrs ?? [];
 
-      if (!attrsToUse || attrsToUse.length === 0) {
-        setTraitStats([]);
-        setYourOverall(null);
-        setAvgOverall(null);
-        setMaxOverall(null);
-        setMinOverall(null);
-        setAvgTraitScoreByType({});
-        // Don't return if you want to wait for lazy load; the lazy effect will re-run
-        return;
-      }
 
-      // Use snapshot if provided
-      if (effectiveRaritySnapshot) {
-        const snap = coerceIndex(effectiveRaritySnapshot);
-        const total = Math.max(1, Number(snap?.total || 0));
-        const attrs = attrsToUse;
 
-        const stats = attrs.map((a) => {
-          const traitType = normType(a?.trait_type);
-          const value = normVal(a?.value);
-          const count = snap?.traits?.[traitType]?.[value] ?? 0;
-          const safe = Math.max(1, count);
-          const pct = (safe / total) * 100;
-          const score = total / safe;
-          return { traitType, value, pct, score, count };
-        });
+  // Compute trait stats directly from the snapshot (no internal fetches)
+  const traitStats = useMemo(
+    () => traitStatsFrom(loadedAttrs, rarityIndexSnapshot),
+    [loadedAttrs, rarityIndexSnapshot, active?.indexKey]
+  );
 
-        const yourSum = typeof effYourScore === "number"
-          ? effYourScore
-          : stats.reduce((s, t) => s + (t.score ?? 0), 0);
+  // Your overall score: prefer precomputed score from item, else sum of trait scores
+  const yourOverall = useMemo(() => {
+    const s = Number(active?.score);
+    if (Number.isFinite(s)) return s;
+    if (!traitStats.length) return null;
+    return traitStats.reduce((acc, t) => acc + (t.score || 0), 0);
+  }, [active?.score, traitStats]);
 
-        setTraitStats(stats);
-        setYourOverall(Number.isFinite(yourSum) ? yourSum : null);
-        setAvgOverall(snap?.overall?.avgObserved ?? null);
-        setMinOverall(snap?.overall?.minObserved ?? null);
-        setMaxOverall(snap?.overall?.maxObserved ?? null);
-        setLoadingRarity(false);
-        return; // ✅ Use snapshot and skip network work
-      }
+  // Observed collection stats come straight from the snapshot
+  const avgOverall  = rarityIndexSnapshot?.overall?.avgObserved ?? null;
+  const minOverall  = rarityIndexSnapshot?.overall?.minObserved ?? null;
+  const maxOverall  = rarityIndexSnapshot?.overall?.maxObserved ?? null;
 
-      setLoadingRarity(true);
-      setRarityErr(null);
-      try {
-        let index: RarityIndex | undefined;
-        if (rarityIndexUrl) {
-          const res = await fetch(rarityIndexUrl).catch(() => null);
-          if (res?.ok) index = (await res.json()) as RarityIndex;
-        }
-
-        // per-trait for THIS NFT
-        const stats: TraitStat[] = attrsToUse.map((a) => {
-          const traitType = normType(a?.trait_type);
-          const value = normVal(a?.value);
-
-          if (!index) return { traitType, value };
-
-          const total = Math.max(1, Number(index.total || 0));
-          const count = index.traits?.[traitType]?.[value] ?? 0;
-          const safe = Math.max(1, Number(count));
-          const pct = (safe / total) * 100;
-          const score = total / safe; // same as 100/pct
-          return { traitType, value, pct, score, count };
-        });
-
-        // your overall (sum of your trait scores where available)
-        const yourSum = stats.reduce((s, t) => s + (t.score ?? 0), 0);
-        if (!cancelled) setYourOverall(isFinite(yourSum) && yourSum > 0 ? yourSum : null);
-
-        if (index) {
-          // prefer observed stats from the file; fallback to theoretical if missing
-          const avgObs = index.overall?.avgObserved ?? null;
-          const minObs = index.overall?.minObserved ?? null;
-          const maxObs = index.overall?.maxObserved ?? null;
-
-          let avgByType = index.traitAvg ?? {};
-          if (!avgByType || Object.keys(avgByType).length === 0) {
-            // fallback: #distinct values per trait type
-            const tmp: Record<string, number> = {};
-            for (const tt of Object.keys(index.traits || {})) {
-              tmp[tt] = Object.keys(index.traits[tt] || {}).length;
-            }
-            avgByType = tmp;
-          }
-
-          if (!cancelled) {
-            setAvgOverall(avgObs ?? null);
-            setMinOverall(minObs ?? null);
-            setMaxOverall(maxObs ?? null);
-            setAvgTraitScoreByType(avgByType);
-          }
-        } else {
-          if (!cancelled) {
-            setAvgOverall(null);
-            setMinOverall(null);
-            setMaxOverall(null);
-            setAvgTraitScoreByType({});
-          }
-        }
-
-        if (!cancelled) setTraitStats(stats);
-      } catch (e: any) {
-        if (!cancelled) setRarityErr(e?.message ?? String(e));
-      } finally {
-        if (!cancelled) setLoadingRarity(false);
-      }
-    }
-    run();
-    return () => { cancelled = true; };
-  }, [open, effAttributes, rarityIndexUrl, effectiveRaritySnapshot, effYourScore, activeKey, lazyAttrs]);
+  // (Optional) tiny "calculating" flag while attrs are still hydrating
+  const loadingRarity = !loadedAttrs?.length && !!active?.metadataUri;
 
   const nice = (n: number, d = 2) =>
     Number.isFinite(n) ? n.toLocaleString(undefined, { maximumFractionDigits: d }) : "—";
 
-  // Use provided rank from gallery sorting, or don't show rank if not available
-  const displayRank = effRank ? effRank.toLocaleString() : null;
-
   // Context-aware title (fits minting & gallery view)
-  const headerTitle =
-    title ?? (effTxSig ? "Mint successful — MetaMartian" : "MetaMartian details");
+  const headerTitle = title ?? (active?.txSig ? "Mint successful — MetaMartian" : "MetaMartian details");
 
-  const indexedTitle = multi ? `${headerTitle} (${index + 1}/${items!.length})` : headerTitle;
+  const indexedTitle = items.length > 1 ? `${headerTitle} (${index + 1}/${items.length})` : headerTitle;
 
   if (!open) return null;
 
@@ -459,12 +236,12 @@ export default function MetaMartianRevealModal({
         <div className="flex items-center justify-between gap-3 border-b border-black/10 bg-white/80 px-5 py-3 backdrop-blur dark:border-white/10 dark:bg-zinc-900/80">
           <h3 className="text-base font-semibold">{indexedTitle}</h3>
           <div className="flex items-center gap-2">
-            {multi && (
+            {items.length > 1 && (
               <div className="mr-2 text-xs opacity-80 tabular-nums">
-                {index + 1} / {items!.length}
+                {index + 1} / {items.length}
               </div>
             )}
-            {multi && (
+            {items.length > 1 && (
               <>
                 <button
                   onClick={() => setIndex((i) => Math.max(0, i - 1))}
@@ -474,8 +251,8 @@ export default function MetaMartianRevealModal({
                   Prev
                 </button>
                 <button
-                  onClick={() => setIndex((i) => Math.min(items!.length - 1, i + 1))}
-                  disabled={index >= items!.length - 1}
+                  onClick={() => setIndex((i) => Math.min(items.length - 1, i + 1))}
+                  disabled={index >= items.length - 1}
                   className="rounded-full border border-black/10 px-2 py-1 text-xs opacity-80 hover:opacity-100 disabled:opacity-40 dark:border-white/10"
                 >
                   Next
@@ -483,10 +260,7 @@ export default function MetaMartianRevealModal({
               </>
             )}
             <button
-              onClick={() => {
-                onClose();
-                onModalClose?.();
-              }}
+              onClick={() => onClose()}
               className="rounded-full border border-black/10 px-3 py-1 text-xs opacity-80 hover:opacity-100 dark:border-white/10"
               aria-label="Close"
             >
@@ -501,11 +275,11 @@ export default function MetaMartianRevealModal({
             {/* IMAGE */}
             <div className="w-full">
               <div className="relative aspect-square w-full overflow-hidden rounded-3xl border border-black/10 bg-white dark:border-white/10 dark:bg-zinc-900">
-                {effImage ? (
+                {active?.image ? (
                   <>
                     <img
-                      src={effImage}
-                      alt={effName}
+                      src={active.image}
+                      alt={active.name}
                       className="block h-full w-full object-contain transition-opacity duration-150"
                       draggable={false}
                       style={{ imageRendering: "pixelated" }} // keeps 8-bit art crisp
@@ -522,17 +296,48 @@ export default function MetaMartianRevealModal({
                 <div className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-black/5 dark:ring-white/5" />
               </div>
 
+              {/* === ARROWS OUTSIDE THE PANEL EDGES === */}
+              {items.length > 1 && (
+                <>
+                  {/* LEFT (anchored to panel's left edge; moved outward by 16px) */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setIndex((i) => Math.max(0, i - 1)); }}
+                    disabled={index === 0}
+                    aria-label="Previous"
+                    className="absolute top-1/2 left-0 z-[90] grid h-12 w-12 place-items-center rounded-full border border-black/10 bg-white/85 shadow-lg backdrop-blur hover:bg-white disabled:opacity-40 dark:border-white/10 dark:bg-zinc-900/85 dark:hover:bg-zinc-900"
+                    style={{ transform: "translate(calc(-100% - 16px), -50%)" }}
+                  >
+                    <svg viewBox="0 0 24 24" className="block h-5 w-5" aria-hidden>
+                      <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+
+                  {/* RIGHT (anchored to panel's right edge; moved outward by 16px) */}
+                  <button
+                    onClick={(e) => { e.stopPropagation(); setIndex((i) => Math.min(items.length - 1, i + 1)); }}
+                    disabled={index >= items.length - 1}
+                    aria-label="Next"
+                    className="absolute top-1/2 right-0 z-[90] grid h-12 w-12 place-items-center rounded-full border border-black/10 bg-white/85 shadow-lg backdrop-blur hover:bg-white disabled:opacity-40 dark:border-white/10 dark:bg-zinc-900/85 dark:hover:bg-zinc-900"
+                    style={{ transform: "translate(calc(100% + 16px), -50%)" }}
+                  >
+                    <svg viewBox="0 0 24 24" className="block h-5 w-5" aria-hidden style={{ transform: "scaleX(-1)" }}>
+                      <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+                    </svg>
+                  </button>
+                </>
+              )}
+
               <div className="mt-3 text-center">
-                <div className="text-lg font-medium">{effName}</div>
-                {displayRank && (
+                <div className="text-lg font-medium">{active?.name}</div>
+                {active?.rank && Number.isFinite(active.rank) && (
                   <div className="mt-1 text-sm font-semibold text-purple-600 dark:text-purple-400">
-                    #{displayRank} rarest
+                    #{active.rank.toLocaleString()} rarest
                   </div>
                 )}
                 <div className="mt-1 flex flex-wrap items-center justify-center gap-2 text-xs opacity-80">
-                  {effMint && (
+                  {active?.mint && (
                     <a
-                      href={`https://explorer.solana.com/address/${effMint}${clusterParam}`}
+                      href={`https://explorer.solana.com/address/${active.mint}${clusterParam}`}
                       target="_blank"
                       rel="noreferrer"
                       className="underline"
@@ -540,11 +345,11 @@ export default function MetaMartianRevealModal({
                       Mint address
                     </a>
                   )}
-                  {effTxSig && (
+                  {active?.txSig && (
                     <>
                       <span>•</span>
                       <a
-                        href={`https://explorer.solana.com/tx/${effTxSig}${clusterParam}`}
+                        href={`https://explorer.solana.com/tx/${active.txSig}${clusterParam}`}
                         target="_blank"
                         rel="noreferrer"
                         className="underline"
@@ -561,7 +366,6 @@ export default function MetaMartianRevealModal({
             <div className="w-full">
               <div className="flex items-center justify-between">
                 <h4 className="text-base font-semibold">Attributes & Rarity</h4>
-                {loadingRarity && <span className="text-xs opacity-70">Calculating…</span>}
               </div>
 
               {rarityErr && (
@@ -570,19 +374,19 @@ export default function MetaMartianRevealModal({
 
               {/* Overall metrics (observed when available) */}
               <div className="mt-3 grid gap-2 sm:grid-cols-3">
-                                 <div className="rounded-xl border p-3 dark:border-white/10">
-                   <div className="text-xs opacity-70">Your Overall Score</div>
-                   <div className="text-lg font-semibold">
-                     {yourOverall != null ? nice(yourOverall, 0) : "—"}
-                   </div>
-                   <div className="text-[11px] opacity-60">
-                     Sum of your trait scores. Higher is rarer.
-                   </div>
-                 </div>
+                <div className="rounded-xl border p-3 dark:border-white/10">
+                  <div className="text-xs opacity-70">Your Overall Score</div>
+                  <div className="text-lg font-semibold">
+                    {active?.score && Number.isFinite(active.score) ? nice(active.score, 0) : "—"}
+                  </div>
+                  <div className="text-[11px] opacity-60">
+                    Sum of your trait scores. Higher is rarer.
+                  </div>
+                </div>
                 <div className="rounded-xl border p-3 dark:border-white/10">
                   <div className="text-xs opacity-70">Average Overall</div>
                   <div className="text-lg font-semibold">
-                    {avgOverall != null ? nice(avgOverall, 0) : "—"}
+                    {rarityIndexSnapshot?.overall?.avgObserved && Number.isFinite(rarityIndexSnapshot.overall.avgObserved) ? nice(rarityIndexSnapshot.overall.avgObserved, 0) : "—"}
                   </div>
                   <div className="text-[11px] opacity-60">
                     Collection average overall score (observed).
@@ -591,8 +395,8 @@ export default function MetaMartianRevealModal({
                 <div className="rounded-xl border p-3 dark:border-white/10">
                   <div className="text-xs opacity-70">Highest / Lowest (observed)</div>
                   <div className="text-lg font-semibold">
-                    {maxOverall != null ? nice(maxOverall, 0) : "—"} /{" "}
-                    {minOverall != null ? nice(minOverall, 0) : "—"}
+                    {rarityIndexSnapshot?.overall?.maxObserved && Number.isFinite(rarityIndexSnapshot.overall.maxObserved) ? nice(rarityIndexSnapshot.overall.maxObserved, 0) : "—"} /{" "}
+                    {rarityIndexSnapshot?.overall?.minObserved && Number.isFinite(rarityIndexSnapshot.overall.minObserved) ? nice(rarityIndexSnapshot.overall.minObserved, 0) : "—"}
                   </div>
                   <div className="text-[11px] opacity-60">
                     Computed from cache across minted items.
