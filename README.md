@@ -1,17 +1,43 @@
-This is a downloadable reusable UI template that utilizes Nextjs and Tailwind for the front end framework while also being preinstalled with Metaplex Umi, Solana WalletAdapter, and Zustand global store for ease of use.
+This is a downloadable reusable UI template that utilizes Next.js and Tailwind for the front end framework while also being preinstalled with Metaplex Umi, Solana WalletAdapter, and Zustand global store for ease of use.
 
+This template includes a complete NFT minting experience with modern UI components, wallet integration, and comprehensive features for Solana-based NFT projects.
 
 ![WebUI Preview](/metaplex-next-js-template.png)
 
 ## Features
 
-- Nextjs React framework
-- Tailwind
-- Solana WalletAdapter
-- Metaplex Umi
-- Zustand
-- Dark/Light Mode
-- Umi Helpers
+### Core Framework
+- Next.js 14 React framework with App Router
+- Tailwind CSS for styling
+- TypeScript for type safety
+- Solana WalletAdapter integration
+- Metaplex Umi for blockchain interactions
+- Zustand for global state management
+
+### UI Components & Sections
+- **Modern Landing Page**: Clean, minimal design with responsive layout
+- **Hero Section**: Eye-catching banner with call-to-action buttons
+- **About Section**: Feature showcase with icons and descriptions
+- **Story Section**: Timeline-based narrative with media support
+- **Mint Section**: Complete minting interface with progress tracking
+- **Team Section**: Team member showcase with social links
+- **Gallery Pages**: NFT collection display with filtering
+- **Navigation**: Responsive navigation with mobile menu
+
+### Wallet & Blockchain Features
+- **Wallet Integration**: Multi-wallet support with connection status
+- **SOL Balance Display**: Real-time balance in navigation bar
+- **NFT Minting**: Complete minting flow with progress tracking
+- **Cancel Functionality**: Safe cancellation during minting process
+- **Rarity System**: Built-in rarity calculation and display
+- **Public RPC**: Uses Solana's public RPC endpoints
+
+### User Experience
+- **Dark/Light Mode**: Theme switcher with persistent preferences
+- **Responsive Design**: Mobile-first approach with desktop optimization
+- **Loading States**: Comprehensive loading and error handling
+- **Progress Tracking**: Visual progress indicators for minting
+- **Error Handling**: Graceful error states and user feedback
 
 ## Installation
 
@@ -21,31 +47,76 @@ git clone https://github.com/metaplex-foundation/metaplex-nextjs-tailwind-templa
 
 ## Setup
 
-### Change RPC
+### Environment Configuration
 
-You are free to set up the RPC url into project as you wish either via
+The template uses Solana's public RPC endpoints by default. You can configure the network by setting environment variables:
 
-- .env
-- constants.ts file
-- hardcoded into umi directly
+```bash
+# Optional: Set the Solana network (defaults to devnet)
+NEXT_PUBLIC_SOLANA_NETWORK=devnet  # or testnet, mainnet-beta
 
-In this example the RPC url is hardcoded into the `umiStore` umi state under `src/store/useUmiStore.ts` at line `21`.
+# Required: Your Candy Machine ID for minting
+NEXT_PUBLIC_CANDY_MACHINE_ID=your_candy_machine_id_here
+```
+
+### RPC Configuration
+
+The project is configured to use public RPC endpoints for reliability and ease of setup. The RPC endpoint is automatically selected based on the network configuration in `src/providers/walletAdapterProvider.tsx`.
 
 ```ts
-const useUmiStore = create<UmiState>()((set) => ({
-  // add your own RPC here
-  umi: createUmi('http://api.devnet.solana.com').use(
-    signerIdentity(
-      createNoopSigner(publicKey('11111111111111111111111111111111'))
-    )
-  ),
-  signer: undefined,
-  updateSigner: (signer) => {
-    console.log('updateSigner')
-    set(() => ({ signer: createSignerFromWalletAdapter(signer) }))
-  },
-}))
+// src/providers/walletAdapterProvider.tsx
+export const WalletAdapterProvider: FC<Props> = ({ children }) => {
+  const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK || 'devnet';
+  
+  // Always use public RPC endpoints
+  const endpoint = useMemo(() => {
+    return clusterApiUrl(network as any);
+  }, [network]);
+
+  return (
+    <ConnectionProvider endpoint={endpoint}>
+      <WalletProvider wallets={wallets} autoConnect>
+        <WalletModalProvider>
+          {children}
+        </WalletModalProvider>
+      </WalletProvider>
+    </ConnectionProvider>
+  );
+};
 ```
+
+### Component Structure
+
+The template includes several reusable section components:
+
+- **HeroSection**: Customizable hero banner with CTA buttons
+- **AboutSection**: Feature showcase with two-column layout
+- **StorySection**: Timeline-based storytelling component
+- **MintSection**: Complete minting interface with progress tracking
+- **TeamSection**: Team member cards with social links
+- **Footer**: Responsive footer with navigation links
+
+All sections accept props for customization and can be easily modified or extended.
+
+## Key Features & Improvements
+
+### Minting Experience
+- **Progress Tracking**: Visual step-by-step progress during minting
+- **Cancel Functionality**: Safe cancellation during preparation phases
+- **Error Handling**: Comprehensive error states and user feedback
+- **Rarity Display**: Automatic rarity calculation and display after minting
+
+### Navigation & User Interface
+- **Theme Switcher**: Toggle between light and dark modes
+- **SOL Balance**: Real-time wallet balance display in navigation
+- **Responsive Design**: Mobile-first approach with desktop optimization
+- **Clean Styling**: Modern, minimal design with consistent spacing
+
+### Wallet Integration
+- **Multi-wallet Support**: Compatible with various Solana wallets
+- **Connection Status**: Visual indicators for wallet connection state
+- **Public RPC**: Reliable connection using Solana's public endpoints
+- **Auto-refresh**: Automatic balance updates every 30 seconds
 
 ## Why Zustand?
 

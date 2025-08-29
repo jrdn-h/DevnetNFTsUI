@@ -1,27 +1,29 @@
 "use client";
 
 import Navigation from "@/components/Navigation";
-import MetaMartianCollectionGallery from "@/components/MetaMartianCollectionGallery";
+import MetaMartianGallery from "@/components/MetaMartianGallery";
 import Footer from "@/components/sections/Footer";
 
-export default function CollectionPage() {
+export default function GalleryPage() {
   return (
     <>
       <Navigation />
       <main className="min-h-screen bg-white dark:bg-zinc-900 pt-20">
         <div className="mx-auto max-w-7xl p-4 sm:p-6 lg:p-8">
           {/* Header Section */}
-          <div className="text-center py-4 mb-6">
+          <div className="text-center py-4">
             <h1 className="text-4xl md:text-5xl font-bold text-gray-900 dark:text-white mb-6">
-              Complete Collection
+              Your MetaMartian Gallery
             </h1>
             <p className="text-xl text-gray-600 dark:text-gray-300 max-w-3xl mx-auto leading-relaxed">
-              Explore every MetaMartian in the collection. Use filters to find rare traits and discover the stories behind each character.
+              Explore your collection of unique MetaMartians. Each character tells a story from across the cosmos.
             </p>
           </div>
 
-          {/* Collection Gallery */}
-          <MetaMartianCollectionGallery />
+          {/* Gallery Content */}
+          <div className="bg-gray-50 dark:bg-zinc-800 rounded-3xl p-6 lg:p-8">
+            <MetaMartianGallery pageSize={16} />
+          </div>
         </div>
       </main>
       
@@ -63,3 +65,5 @@ export default function CollectionPage() {
     </>
   );
 }
+
+

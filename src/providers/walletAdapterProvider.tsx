@@ -1,9 +1,11 @@
 "use client";
 
 import {
+  ConnectionProvider,
   WalletProvider
 } from "@solana/wallet-adapter-react";
 import { WalletModalProvider } from "@solana/wallet-adapter-react-ui";
+import { clusterApiUrl } from "@solana/web3.js";
 import React, { FC, useMemo } from "react";
 
 // Default styles that can be overridden by your app
@@ -14,6 +16,13 @@ type Props = {
 };
 
 export const WalletAdapterProvider: FC<Props> = ({ children }) => {
+  // The network can be set to 'devnet', 'testnet', or 'mainnet-beta'.
+  const network = process.env.NEXT_PUBLIC_SOLANA_NETWORK || 'devnet';
+  
+  // Always use public RPC endpoints
+  const endpoint = useMemo(() => {
+    return clusterApiUrl(network as any);
+  }, [network]);
 
   const wallets = useMemo(
     () => [
@@ -35,13 +44,13 @@ export const WalletAdapterProvider: FC<Props> = ({ children }) => {
   );
 
   return (
-
+    <ConnectionProvider endpoint={endpoint}>
       <WalletProvider wallets={wallets} autoConnect>
         <WalletModalProvider>
           {/* Your app's components go here, nested within the context providers. */}
           {children}
         </WalletModalProvider>
       </WalletProvider>
-
+    </ConnectionProvider>
   );
 };

@@ -466,7 +466,7 @@ export default function MetaMartianCollectionGallery({
 
              <div className="grid gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
         {/* LEFT: Sticky controls */}
-        <aside className="lg:sticky lg:top-4 h-fit space-y-4 rounded-2xl border p-4 dark:border-neutral-800 bg-white/60 dark:bg-zinc-900/60 backdrop-blur">
+        <aside className="lg:sticky lg:top-20 h-fit space-y-4 rounded-2xl border p-4 dark:border-neutral-800 bg-white/60 dark:bg-zinc-900/60 backdrop-blur">
           {/* Search by # */}
           <div className="space-y-1">
             <div className="text-xs font-medium opacity-70">Find by number</div>

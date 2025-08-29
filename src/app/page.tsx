@@ -1,117 +1,167 @@
 "use client";
 
-import { useState } from "react";
-import MetaplexLogo from "@/assets/logos/metaplex-logo.png";
-import Header from "@/components/header";
-import MintButton from "@/components/MintButton";
-import Supply from "@/components/Supply";
-import NftPreviewByAddress from "@/components/NftPreviewByAddress";
-import MetaMartianGallery from "@/components/MetaMartianGallery";
+import React from "react";
+import Navigation from "@/components/Navigation";
+import HeroSection from "@/components/sections/HeroSection";
+import AboutSection from "@/components/sections/AboutSection";
+import StorySection from "@/components/sections/StorySection";
+import TeamSection from "@/components/sections/TeamSection";
+import MintSection from "@/components/sections/MintSection";
+import Footer from "@/components/sections/Footer";
 
 export default function Home() {
-  const [lastMintedNft, setLastMintedNft] = useState<string | null>(null);
-  const [supplyRefresh, setSupplyRefresh] = useState<number>(0);
+  const scrollToMint = () => {
+    document.getElementById('mint')?.scrollIntoView({ behavior: 'smooth' });
+  };
+
   return (
-    <main className="flex min-h-screen flex-col items-center justify-between p-24">
-      <Header />
-
-      <div className="flex flex-col items-center gap-4">
-        <Supply refreshTrigger={supplyRefresh} />
-        <MintButton onMintSuccess={(mintAddress) => {
-          setLastMintedNft(mintAddress);
-          setSupplyRefresh(prev => prev + 1);
-        }} />
-        {lastMintedNft && (
-          <div className="mt-4 p-4 border rounded-lg dark:border-neutral-800">
-            <h3 className="text-sm font-medium mb-2 text-center">Your MetaMartian!</h3>
-            <NftPreviewByAddress address={lastMintedNft} />
-          </div>
-        )}
-        
-        {/* MetaMartian Gallery */}
-        <div className="mt-8 w-full max-w-4xl">
-          <MetaMartianGallery pageSize={12} />
-        </div>
-      </div>
-
-      <div className="relative z-[-1] flex place-items-center ">
-        <img
-          className="relative dark:drop-shadow-[0_0_0.3rem_#ffffff70] dark:invert"
-          src={MetaplexLogo.src}
-          alt="<Metaplex Logo"
-          width={500}
+    <>
+      <Navigation />
+      <main>
+        <HeroSection 
+          title="MetaMartians"
+          subtitle="Explore the Universe of Digital Collectibles"
+          description="Join the adventure with unique NFT characters exploring the cosmos. Each MetaMartian has its own story and traits waiting to be discovered."
+          ctaText="Mint Now"
+          onCtaClick={scrollToMint}
+          // heroImage="/images/hero-metamartian.png" // Add your hero image path here
+          // heroGif="/images/hero-animation.gif" // Or add your hero GIF path here
         />
-      </div>
+        
+        <AboutSection 
+          title="About MetaMartians"
+          description="MetaMartians are a unique collection of digital beings from across the cosmos. Each character represents a different alien civilization with its own culture, technology, and story."
+          // aboutImage="/images/about-image.png" // Add your about image path here
+          // aboutGif="/images/about-animation.gif" // Or add your about GIF path here
+          features={[
+            {
+              title: "Unique Traits",
+              description: "Each MetaMartian has carefully crafted traits that make them one-of-a-kind.",
+              icon: "✨"
+            },
+            {
+              title: "Cosmic Stories",
+              description: "Every character comes with rich lore and backstory from their home planet.",
+              icon: "🌌"
+            },
+            {
+              title: "Community Driven",
+              description: "Join a community of collectors and help shape the MetaMartian universe.",
+              icon: "👥"
+            }
+          ]}
+        />
 
-      <div className="mb-32 grid text-center lg:mb-0 lg:w-full lg:max-w-5xl lg:grid-cols-4 lg:text-left">
-        <a
-          href="https://developers.metaplex.com"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Docs{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            Learn about Solana and the Metaplex programs from the developer hub.
-          </p>
-        </a>
+        <StorySection 
+          title="The MetaMartian Story"
+          description="Journey through the cosmic tale of how MetaMartians came to be, from distant galaxies to digital reality."
+          // backgroundImage="/images/story-background.png" // Add your story background image here
+          // backgroundGif="/images/story-background.gif" // Or add your story background GIF here
+          timeline={[
+            {
+              title: "The Great Cosmic Convergence",
+              year: "2089",
+              description: "Across the universe, different alien civilizations discovered interdimensional portals that connected their worlds to Earth's digital realm.",
+              // image: "/images/timeline-1.png" // Add timeline images here
+              // gif: "/images/timeline-1.gif"
+            },
+            {
+              title: "Digital Awakening",
+              year: "2091", 
+              description: "The first MetaMartians manifested as digital beings, retaining their unique traits and memories from their home planets.",
+              // image: "/images/timeline-2.png"
+              // gif: "/images/timeline-2.gif"
+            },
+            {
+              title: "The Collection Begins",
+              year: "2024",
+              description: "These cosmic beings now seek human collectors to preserve their stories and help them explore this new digital frontier.",
+              // image: "/images/timeline-3.png"
+              // gif: "/images/timeline-3.gif"
+            }
+          ]}
+        />
 
-        <a
-          href="https://github.com/metaplex-foundation"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Github{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            The Metaplex Foundation&apos;s Github projects.
-          </p>
-        </a>
+        <TeamSection 
+          title="Meet the Team"
+          description="The cosmic minds behind MetaMartians, bringing together art, technology, and storytelling from across the universe."
+          members={[
+            {
+              name: "Team Member 1",
+              role: "Creative Director",
+              description: "Visionary artist who conceptualized the MetaMartian universe and designed the unique alien civilizations.",
+              // image: "/images/team-member-1.png" // Add team member images here
+              // gif: "/images/team-member-1.gif"
+              social: {
+                twitter: "#",
+                linkedin: "#"
+              }
+            },
+            {
+              name: "Team Member 2", 
+              role: "Technical Lead",
+              description: "Blockchain architect responsible for the smart contracts and technical infrastructure of the MetaMartian ecosystem.",
+              // image: "/images/team-member-2.png"
+              // gif: "/images/team-member-2.gif"
+              social: {
+                twitter: "#",
+                github: "#"
+              }
+            }
+          ]}
+        />
 
-        <a
-          href="https://discord.com/invite/metaplex"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Discord{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-sm opacity-50">
-            Come chat and find support in the Metaplex Discord server.
-          </p>
-        </a>
-
-        <a
-          href="https://x.com/metaplex"
-          className="group rounded-lg border border-transparent px-5 py-4 transition-colors hover:border-gray-300 hover:bg-gray-100 hover:dark:border-neutral-700 hover:dark:bg-neutral-800/30"
-          target="_blank"
-          rel="noopener noreferrer"
-        >
-          <h2 className="mb-3 text-2xl font-semibold">
-            Twitter{" "}
-            <span className="inline-block transition-transform group-hover:translate-x-1 motion-reduce:transform-none">
-              -&gt;
-            </span>
-          </h2>
-          <p className="m-0 max-w-[30ch] text-balance text-sm opacity-50">
-            The Metaplex Twitter/X account for news and updates.
-          </p>
-        </a>
-      </div>
-    </main>
+        <MintSection 
+          title="Mint Your MetaMartian"
+          description="Join the cosmic adventure by minting your unique MetaMartian. Each one is procedurally generated with rare traits and comes with its own story from across the universe."
+          price="0.1 SOL"
+          // mintImage="/images/mint-preview.png" // Add your mint preview image here
+          // mintGif="/images/mint-animation.gif" // Or add your mint animation GIF here
+          features={[
+            "Unique procedurally generated traits",
+            "Rich backstory and lore",
+            "High-quality artwork",
+            "Community membership",
+            "Future utility and rewards"
+          ]}
+        />
+      </main>
+      
+      <Footer 
+        sections={[
+          {
+            title: "Project",
+            links: [
+              { name: "Home", href: "/" },
+              { name: "Gallery", href: "/gallery" },
+              { name: "Collection", href: "/collection" },
+            ]
+          },
+          {
+            title: "Community",
+            links: [
+              { name: "Discord", href: "#" },
+              { name: "Twitter", href: "#" },
+              { name: "OpenSea", href: "#" },
+            ]
+          },
+          {
+            title: "Resources",
+            links: [
+              { name: "Documentation", href: "#" },
+              { name: "FAQ", href: "#" },
+              { name: "Support", href: "#" },
+            ]
+          }
+        ]}
+        socialLinks={{
+          twitter: "#",
+          discord: "#",
+          instagram: "#",
+          opensea: "#"
+        }}
+        copyright="2024 MetaMartians. All rights reserved."
+      />
+    </>
   );
 }

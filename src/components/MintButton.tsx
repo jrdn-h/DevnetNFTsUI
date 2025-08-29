@@ -13,6 +13,7 @@ import { fetchCandyMachine, mintV2 } from "@metaplex-foundation/mpl-candy-machin
 import { fetchMetadata, findMetadataPda } from "@metaplex-foundation/mpl-token-metadata";
 import { setComputeUnitLimit, addMemo } from "@metaplex-foundation/mpl-toolbox";
 import MintingOverlay from "@/components/MintingOverlay";
+import { loadRarityIndex, scoreFromAttributes } from "@/lib/rarity";
 
 const WalletMultiButton = dynamic(
   async () => (await import("@solana/wallet-adapter-react-ui")).WalletMultiButton,
@@ -44,7 +45,7 @@ export default function MintButton({
   const [stepIndex, setStepIndex] = useState(0);
   const [status, setStatus] = useState<string | null>(null);
 
-  const { Modal, openForMint } = useMetaMartianReveal();
+  const { Modal, openWithData } = useMetaMartianReveal();
 
   useEffect(() => setMounted(true), []);
   if (!mounted) {
@@ -59,6 +60,15 @@ export default function MintButton({
       </div>
     );
   }
+
+  const onCancel = () => {
+    setBusy(false);
+    setStepIndex(0);
+    setStatus("Minting cancelled");
+  };
+
+  // Cancel is safe during steps 0-2 (before wallet signature)
+  const canCancel = busy && stepIndex <= 2;
 
   const onMint = async () => {
     setBusy(true);
@@ -93,7 +103,7 @@ export default function MintButton({
           })
         );
 
-      // (4) Await sig
+      // (4) Await sig - After this point, cancellation is not safe
       setStepIndex(3);
 
       // (5) Send + confirm
@@ -101,11 +111,47 @@ export default function MintButton({
       const { signature } = await builder.sendAndConfirm(umi);
       const sig58 = bs58.encode(signature);
 
-      // (6–7) Open reveal for this mint (fetch metadata/image/attributes internally)
+      // (6–7) Fetch metadata + image + attributes, compute rarity score, open with snapshot
       setStepIndex(5);
-      await openForMint(umi, nftMint.publicKey, {
+      const mdPda = findMetadataPda(umi, { mint: nftMint.publicKey });
+      let md: any | undefined;
+      for (let i = 0; i < 24; i++) {
+        try {
+          md = await fetchMetadata(umi, mdPda);
+          break;
+        } catch {
+          await new Promise((r) => setTimeout(r, 500));
+        }
+      }
+
+      let name = md?.name || "MetaMartian";
+      let image: string | undefined;
+      let attributes: any[] | undefined;
+      if (md?.uri) {
+        try {
+          const res = await fetch(md.uri);
+          const json = await res.json();
+          name = json?.name ?? name;
+          image = json?.image;
+          attributes = Array.isArray(json?.attributes) ? json.attributes : undefined;
+        } catch {}
+      }
+
+      const collectionMintStr = cm.collectionMint.toString();
+      const rarityIndex = await loadRarityIndex({ collectionMint: collectionMintStr });
+      const yourScore = rarityIndex && Array.isArray(attributes)
+        ? scoreFromAttributes(attributes, rarityIndex)
+        : undefined;
+
+      openWithData({
+        name,
+        image,
+        attributes,
+        mint: nftMint.publicKey.toString(),
         txSig: sig58,
-        collectionMint: cm.collectionMint.toString(),
+        collectionMint: collectionMintStr,
+        rarityIndexSnapshot: rarityIndex,
+        yourScore,
       });
 
       setStatus("Minted!");
@@ -121,7 +167,13 @@ export default function MintButton({
 
   return (
     <>
-      <MintingOverlay open={busy} stepIndex={stepIndex} steps={STEPS} />
+      <MintingOverlay 
+        open={busy} 
+        stepIndex={stepIndex} 
+        steps={STEPS}
+        canCancel={canCancel}
+        onCancel={onCancel}
+      />
       {Modal}
 
       <div className="flex flex-col items-center gap-3">

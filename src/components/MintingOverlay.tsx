@@ -8,6 +8,8 @@ type Props = {
   steps: string[];
   title?: string;
   subtitle?: string;
+  canCancel?: boolean;
+  onCancel?: () => void;
 };
 
 export default function MintingOverlay({
@@ -16,6 +18,8 @@ export default function MintingOverlay({
   steps,
   title = "Minting your MetaMartian…",
   subtitle = "Please approve in your wallet and keep this tab open.",
+  canCancel = false,
+  onCancel,
 }: Props) {
   if (!open) return null;
 
@@ -107,6 +111,18 @@ export default function MintingOverlay({
             </Fragment>
           ))}
         </div>
+
+        {/* Cancel button */}
+        {canCancel && onCancel && (
+          <div className="mt-6 flex justify-center">
+            <button
+              onClick={onCancel}
+              className="px-4 py-2 text-sm rounded-xl border border-red-200 dark:border-red-800 text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-900/20 transition-colors"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
       </div>
     </div>
   );
