@@ -7,14 +7,9 @@ import { SunIcon, MoonIcon } from "@heroicons/react/24/outline";
 export default function ThemeSwitcher() {
   const { resolvedTheme, setTheme } = useTheme();
   const [mounted, setMounted] = useState(false);
-
-  // Prevent server/client SVG mismatch by waiting until mount
   useEffect(() => setMounted(true), []);
 
-  if (!mounted) {
-    // keep layout stable during hydration
-    return <div className="h-9 w-9 rounded-lg" aria-hidden />;
-  }
+  if (!mounted) return <div className="h-9 w-9 rounded-xl" aria-hidden />;
 
   const isDark = resolvedTheme === "dark";
 
@@ -23,9 +18,12 @@ export default function ThemeSwitcher() {
       type="button"
       aria-label="Toggle theme"
       onClick={() => setTheme(isDark ? "light" : "dark")}
-      className="cursor-pointer bg-background text-primary-green border border-gray-300 p-3 rounded-lg h-full self-center dark:border-neutral-800 dark:bg-zinc-800/30 lg:static lg:w-auto lg:rounded-xl lg:border lg:bg-gray-200 lg:dark:bg-zinc-800/30"
+      className="h-9 w-9 inline-flex items-center justify-center rounded-xl
+                 border border-white/20 bg-white/10 backdrop-blur-xl
+                 hover:bg-white/15 active:scale-[.98]
+                 dark:border-white/10 dark:bg-white/5 transition"
     >
-      {isDark ? <SunIcon className="h-6 w-6" /> : <MoonIcon className="h-6 w-6" />}
+      {isDark ? <SunIcon className="h-5 w-5" /> : <MoonIcon className="h-5 w-5" />}
     </button>
   );
 }
