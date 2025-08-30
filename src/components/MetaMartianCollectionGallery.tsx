@@ -6,15 +6,44 @@ import useMetaMartianReveal from "@/hooks/useMetaMartianReveal";
 import { refreshMintedCacheOnce } from "@/lib/mintedCache";
 import { useCollectionDB, type CollectionDB } from "@/store/useCollectionDB";
 
-// Gallery core imports
-import { adaptDbItem } from "@/gallery-core/types";
-import { useInfiniteGrid } from "@/gallery-core/useInfiniteGrid";
-import { useGalleryFilters } from "@/gallery-core/useGalleryFilters";
-import { useFindByNumber } from "@/gallery-core/useFindByNumber";
-import { GalleryControls } from "@/gallery-core/GalleryControls";
-import { GalleryGrid } from "@/gallery-core/GalleryGrid";
+type SortKey = "num-asc" | "num-desc" | "rarity-asc" | "rarity-desc";
+
+// trait normalization (used in filters)
+const normType = (x: any) => {
+  const s = (x ?? "—").toString().trim();
+  return s.length ? s : "—";
+};
+const normVal = (v: any) =>
+  v === null || v === undefined || v === ""
+    ? "None"
+    : typeof v === "object"
+    ? JSON.stringify(v)
+    : String(v);
 
 
+
+function FoundBeacon() {
+  return (
+    <>
+      {/* soft spinning gradient halo */}
+      <span
+        className="pointer-events-none absolute -inset-[3px] rounded-2xl
+                   bg-[conic-gradient(at_50%_50%,#22c55e_0deg,#06b6d4_120deg,#a78bfa_240deg,#22c55e_360deg)]
+                   animate-[spin_2.8s_linear_infinite] opacity-55 blur-md"
+      />
+      {/* bright ring + glow */}
+      <span
+        className="pointer-events-none absolute inset-0 rounded-xl ring-4 ring-emerald-400/80
+                   shadow-[0_0_0_3px_rgba(16,185,129,.50),0_0_40px_12px_rgba(16,185,129,.35)]"
+      />
+      {/* ripple ping */}
+      <span
+        className="pointer-events-none absolute left-1/2 top-1/2 h-28 w-28 -translate-x-1/2 -translate-y-1/2
+                   rounded-full border-2 border-emerald-400/50 animate-ping"
+      />
+    </>
+  );
+}
 
 export default function MetaMartianCollectionGallery({
   pageStep = 60,
@@ -34,6 +63,15 @@ export default function MetaMartianCollectionGallery({
   );
   const [mintedSet, setMintedSet] = useState<Set<string>>(new Set());
 
+  const [visible, setVisible] = useState(initialVisible);
+  const sentinelRef = useRef<HTMLDivElement | null>(null);
+  const [searchNum, setSearchNum] = useState<string>("");
+  const [highlight, setHighlight] = useState<string | null>(null);
+
+  const [minterFilter, setMinterFilter] = useState<"all" | "minted" | "unminted">("all");
+  const [sortKey, setSortKey] = useState<SortKey>("num-asc");
+  const [selectedTraits, setSelectedTraits] = useState<Record<string, Set<string>>>({});
+
   const [, startTransition] = useTransition();
 
   // DB store
@@ -41,6 +79,21 @@ export default function MetaMartianCollectionGallery({
   const loadDB = useCollectionDB((s) => s.load);
   const dbLoading = useCollectionDB((s) => s.loading);
   const dbError = useCollectionDB((s) => s.error);
+
+  // NEW: persistent highlight that survives until user hovers the card
+  const [stickyHighlight, setStickyHighlight] = useState<string | null>(null);
+
+  // Flash highlight for found cards
+  const HIGHLIGHT_MS = 1600; // how long the big flashy effect lasts
+  const [flashHighlight, setFlashHighlight] = useState<string | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
+    };
+  }, []);
 
   // Score computation cache
   const scoreCacheRef = useRef<Map<string, number>>(new Map());
@@ -122,66 +175,232 @@ export default function MetaMartianCollectionGallery({
     };
   }, [db?.collectionMint, RPC]);
 
-  // Convert DB items to CoreItem format
-  const coreItems = useMemo(() => {
-    return (db?.items ?? []).map(adaptDbItem);
-  }, [db?.items]);
+  const traitTypes = useMemo(() => (db ? Object.keys(db.traits || {}).sort() : []), [db]);
 
-  // Gallery core hooks
-  const snapshot = db ? {
-    total: db.items.length,
-    traits: db.traits,
-    overall: db.overall,
-    traitAvg: db.traitAvg
-  } : undefined;
-
-  const { filteredSorted, traitTypes, traitValuesByType, selectedTraits, setSelectedTraits, clearAllTraits, minterFilter, setMinterFilter, sortKey, setSortKey } =
-    useGalleryFilters(coreItems, {
-      snapshot,
-      mintedLookup: hasMinted,
-      enableMintedFilter: true
-    });
-
-  const { visible, setVisible, sentinelRef } = useInfiniteGrid(initialVisible, pageStep);
-  const { searchNum, setSearchNum, flash, setFlash, sticky, setSticky, onSearch } = useFindByNumber(filteredSorted, pageStep);
-
-  // Minted counts for controls
-  const { mintedCount, unmintedCount } = useMemo(() => {
-    let minted = 0;
-    for (let i = 0; i < filteredSorted.length; i++) {
-      if (hasMinted(filteredSorted[i].indexKey)) minted++;
+  const traitValuesByType = useMemo(() => {
+    const map: Record<string, string[]> = {};
+    if (!db) return map;
+    for (const tt of Object.keys(db.traits)) {
+      map[tt] = Object.keys(db.traits[tt]).sort();
     }
-    return { mintedCount: minted, unmintedCount: Math.max(0, filteredSorted.length - minted) };
-  }, [filteredSorted, hasMinted]);
+    return map;
+  }, [db]);
+
+  // ADD: single source of truth for trait filtering
+  const traitFiltered = useMemo(() => {
+    let arr: CollectionDB["items"] = db?.items ?? [];
+    const active = Object.keys(selectedTraits);
+    if (active.length > 0) {
+      arr = arr.filter((it) => {
+        for (const tt of active) {
+          const allowed = selectedTraits[tt];
+          const found = it.attributes?.find((a) => normType(a?.trait_type) === tt);
+          const val = found ? normVal(found.value) : "None";
+          if (!allowed.has(val)) return false;
+        }
+        return true;
+      });
+    }
+    return arr;
+  }, [db?.items, selectedTraits]);
+
+  // REPLACE: minted/unminted counts derived from the traitFiltered list
+  const { mintedCount, unmintedCount } = useMemo(() => {
+    const base = traitFiltered;
+    let minted = 0;
+    for (let i = 0; i < base.length; i++) {
+      if (hasMinted(base[i].index)) minted++;
+    }
+    return { mintedCount: minted, unmintedCount: Math.max(0, base.length - minted) };
+  }, [traitFiltered, hasMinted]);
+
+  const toggleTraitValue = (tt: string, val: string) => {
+    setSelectedTraits((prev) => {
+      const next: Record<string, Set<string>> = {};
+      for (const k of Object.keys(prev)) next[k] = new Set(prev[k]);
+      if (!next[tt]) next[tt] = new Set<string>();
+      next[tt].has(val) ? next[tt].delete(val) : next[tt].add(val);
+      if (next[tt].size === 0) delete next[tt];
+      return next;
+    });
+  };
+  const clearAllTraits = () => setSelectedTraits({});
+
+  // REPLACE: build the grid list from the same traitFiltered list
+  const filteredSorted = useMemo(() => {
+    let arr = traitFiltered;
+
+    if (minterFilter === "minted") {
+      arr = arr.filter((it) => hasMinted(it.index));
+    } else if (minterFilter === "unminted") {
+      arr = arr.filter((it) => !hasMinted(it.index));
+    }
+
+    const out = [...arr];
+    switch (sortKey) {
+      case "num-asc":
+        out.sort((a, b) => Number(a.index) - Number(b.index));
+        break;
+      case "num-desc":
+        out.sort((a, b) => Number(b.index) - Number(a.index));
+        break;
+      case "rarity-asc":
+        out.sort((a, b) => a.score - b.score);
+        break;
+      case "rarity-desc":
+        out.sort((a, b) => b.score - a.score);
+        break;
+    }
+    return out;
+  }, [traitFiltered, minterFilter, sortKey, hasMinted]);
+
+  // Fast index → position lookup in the current filtered+sorted view
+  const posByIndex = useMemo(() => {
+    const m = new Map<string, number>();
+    filteredSorted.forEach((x, i) => m.set(x.index, i));
+    return m;
+  }, [filteredSorted]);
 
   // Prebuild the exact items shape the modal expects (once per filteredSorted change)
   const modalItems = useMemo(() => {
     return filteredSorted.map((x) => ({
       name: x.name,
       image: x.image,
-      metadataUri: x.metadataUri,
-      indexKey: x.indexKey,
+      metadataUri: x.metadata,
+      indexKey: x.index,
       attributes: x.attributes,
       score: x.score,
       rank: x.rank,
     }));
   }, [filteredSorted]);
 
-  // Find-by-number callback using gallery core
-  const handleSearch = useCallback(() => {
-    onSearch((i: number, item: any) => {
-      startTransition(() => {
-        openWithData({
-          items: modalItems,
-          initialIndex: i,
-          title: "MetaMartian details",
-          collectionMint: db?.collectionMint,
-          rarityIndexSnapshot: snapshot,
-          onModalClose: () => setSticky(item.indexKey),
-        });
+  // Memoize sorted scores once (for rank fallback)
+  const sortedScoresDesc = useMemo(() => {
+    const arr = (db?.items ?? [])
+      .map((x) => Number(x.score))
+      .filter((n) => Number.isFinite(n))
+      .sort((a, b) => b - a);
+    return arr;
+  }, [db]);
+
+  // Fast single-item score (fallback) from DB traits
+  const computeScoreFromTraits = useCallback((attrs: any[]): number => {
+    if (!db) return NaN;
+    const total = Math.max(1, db.items.length);
+    let sum = 0;
+    const traitsMap = db.traits || {};
+    for (const tt of Object.keys(traitsMap)) {
+      const found = attrs?.find?.((a: any) => {
+        const s = (a?.trait_type ?? "—").toString().trim();
+        return s.length ? s === tt : "—" === tt;
       });
-    }, setVisible);
-  }, [onSearch, modalItems, openWithData, db?.collectionMint, snapshot, setSticky, setVisible, startTransition]);
+      const val = found?.value == null || found?.value === "" ? "None"
+        : typeof found.value === "object" ? JSON.stringify(found.value) : String(found.value);
+      const count = traitsMap[tt]?.[val] ?? 0;
+      sum += total / Math.max(1, count);
+    }
+    return sum;
+  }, [db]);
+
+  // Get display score/rank with coercion + cached fallback + binary search
+  const getDisplayScoreRank = useCallback((it: CollectionDB["items"][number]) => {
+    // coerce score
+    let score = typeof it.score === "number" ? it.score : Number(it.score);
+    if (!Number.isFinite(score)) {
+      const cached = scoreCacheRef.current.get(it.index);
+      if (cached != null) {
+        score = cached;
+      } else {
+        score = computeScoreFromTraits(it.attributes || []);
+        if (Number.isFinite(score)) {
+          scoreCacheRef.current.set(it.index, score);
+        }
+      }
+    }
+
+    // coerce rank or derive from sorted scores (1 = highest)
+    let rank = typeof it.rank === "number" ? it.rank : Number(it.rank);
+    if (!Number.isFinite(rank) && sortedScoresDesc.length && Number.isFinite(score)) {
+      // count of scores > my score (binary search)
+      const arr = sortedScoresDesc;
+      let lo = 0, hi = arr.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        if (arr[mid] > score) lo = mid + 1; else hi = mid;
+      }
+      rank = lo + 1;
+    }
+
+    return { score, rank };
+  }, [computeScoreFromTraits, sortedScoresDesc]);
+
+  // Infinite scroll growth
+  useEffect(() => {
+    if (!sentinelRef.current) return;
+    const el = sentinelRef.current;
+    const obs = new IntersectionObserver(
+      (entries) => {
+        if (entries[0].isIntersecting) setVisible((v) => v + pageStep);
+      },
+      { rootMargin: "800px 0px 800px 0px", threshold: 0 }
+    );
+    obs.observe(el);
+    return () => obs.unobserve(el);
+  }, [pageStep, filteredSorted.length]);
+
+  // Find-by-number
+  // Find-by-number (O(1) lookup)
+  const onSearch = useCallback(() => {
+    const nHuman = Number(searchNum.trim());
+    if (!db || !Number.isFinite(nHuman)) return;
+
+    const nZero = Math.max(0, nHuman - 1);
+    const i = posByIndex.get(String(nZero));
+    if (i == null) return;
+
+    setVisible((v) => Math.max(v, i + Math.max(24, pageStep)));
+    const item = filteredSorted[i];
+
+    // Preload hero image (non-blocking)
+    if (item?.image) { const img = new Image(); img.src = item.image; }
+
+    // Flash highlight immediately (respect reduced motion)
+    const prefersReducedMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    if (!prefersReducedMotion) {
+      setFlashHighlight(item.index);
+      if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
+      flashTimerRef.current = window.setTimeout(() => setFlashHighlight(null), HIGHLIGHT_MS);
+    } else {
+      // Go straight to sticky accent
+      setStickyHighlight(item.index);
+    }
+
+    // Open quickly with prebuilt items
+    openWithData({
+      items: modalItems,
+      initialIndex: i,
+      title: "MetaMartian details",
+      collectionMint: db.collectionMint,
+      rarityIndexSnapshot: {
+        total: db.items.length,
+        traits: db.traits,
+        overall: db.overall,
+        traitAvg: db.traitAvg,
+      },
+      // Sticky highlight is applied AFTER closing the modal
+      onModalClose: () => setStickyHighlight(item.index),
+    });
+
+    // Optionally center it behind the modal immediately
+    requestAnimationFrame(() => {
+      const el = document.getElementById(`mm-card-${item.index}`);
+      if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
+    });
+  }, [searchNum, db, posByIndex, filteredSorted, modalItems, openWithData, pageStep]);
 
   const shown = filteredSorted.slice(0, visible);
 
@@ -205,73 +424,234 @@ export default function MetaMartianCollectionGallery({
 
       <div className="grid gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
         {/* LEFT: controls */}
-        <GalleryControls
-          searchNum={searchNum}
-          setSearchNum={setSearchNum}
-          onSearch={handleSearch}
-          showMinted={true}
-          mintedCounts={{ minted: mintedCount, unminted: unmintedCount }}
-          minterFilter={minterFilter}
-          setMinterFilter={setMinterFilter}
-          sortKey={sortKey}
-          setSortKey={setSortKey}
-          traitTypes={traitTypes}
-          traitValuesByType={traitValuesByType}
-          selectedTraits={selectedTraits}
-          toggleTraitValue={(tt, val) => {
-            setSelectedTraits(prev => {
-              const next: Record<string, Set<string>> = {};
-              for (const k of Object.keys(prev)) next[k] = new Set(prev[k]);
-              (next[tt] ??= new Set()).has(val) ? next[tt].delete(val) : next[tt].add(val);
-              if (next[tt].size === 0) delete next[tt];
-              return next;
-            });
-          }}
-          clearAllTraits={clearAllTraits}
-        />
+        <aside className="lg:sticky lg:top-20 h-fit space-y-4 rounded-2xl border p-4 dark:border-neutral-800 bg-white/60 dark:bg-zinc-900/60 backdrop-blur">
+          {/* Search by # */}
+          <div className="space-y-1">
+            <div className="text-xs font-medium opacity-70">Find by number</div>
+            <div className="flex gap-2">
+              <input
+                inputMode="numeric"
+                pattern="[0-9]*"
+                value={searchNum}
+                onChange={(e) => setSearchNum(e.target.value.replace(/\D+/g, ""))}
+                onKeyDown={(e) => e.key === "Enter" && onSearch()}
+                className="h-9 w-28 rounded-lg border px-2 text-sm dark:border-neutral-700"
+                placeholder="e.g. 123"
+              />
+              <button
+                onClick={onSearch}
+                disabled={!searchNum}
+                className="h-9 rounded-lg border px-3 text-sm disabled:opacity-50 dark:border-neutral-700"
+              >
+                Go
+              </button>
+            </div>
+            <p className="text-[11px] opacity-60">Jumps to the card and opens its details.</p>
+          </div>
+
+          {/* Minted */}
+          <div>
+            <div className="text-xs font-medium opacity-70">Minted</div>
+            <select
+              value={minterFilter}
+              onChange={(e) => setMinterFilter(e.target.value as any)}
+              className="mt-1 h-9 w-full rounded-lg border px-2 text-sm dark:border-neutral-700"
+            >
+              <option value="all">All</option>
+              <option value="minted">Minted ({mintedCount})</option>
+              <option value="unminted">Not minted ({unmintedCount})</option>
+            </select>
+          </div>
+
+          {/* Sort */}
+          <div>
+            <div className="text-xs font-medium opacity-70">Sort</div>
+            <select
+              value={sortKey}
+              onChange={(e) => setSortKey(e.target.value as SortKey)}
+              className="mt-1 h-9 w-full rounded-lg border px-2 text-sm dark:border-neutral-700"
+            >
+              <option value="num-asc">Number ↑</option>
+              <option value="num-desc">Number ↓</option>
+              <option value="rarity-desc">Rarity ↑ (rare first)</option>
+              <option value="rarity-asc">Rarity ↓ (common first)</option>
+            </select>
+          </div>
+
+          {/* Trait filters */}
+          <div>
+            <div className="mb-2 flex items-center justify-between">
+              <div className="text-xs font-medium opacity-70">Filter by traits</div>
+              <button onClick={clearAllTraits} className="text-xs opacity-80 underline hover:opacity-100">
+                Clear all
+              </button>
+            </div>
+
+            {!db && <div className="mb-2 text-[11px] opacity-70">Loading trait data…</div>}
+
+            <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">
+              {traitTypes.map((tt) => {
+                const values = traitValuesByType[tt] || [];
+                const selected = selectedTraits[tt] || new Set<string>();
+                const selectedCount = selected.size;
+                return (
+                  <details key={tt} className="group rounded-lg border px-2 py-1 dark:border-neutral-800">
+                    <summary className="flex cursor-pointer list-none items-center justify-between py-1">
+                      <span className="text-sm">{tt}</span>
+                      <span className="text-[10px] opacity-60">
+                        {selectedCount > 0 ? `${selectedCount} selected` : `${values.length}`}
+                      </span>
+                    </summary>
+
+                    <div className="mt-2 grid grid-cols-2 gap-1">
+                      {values.map((val) => {
+                        const checked = selected.has(val);
+                        const count = db?.traits?.[tt]?.[val] ?? 0;
+                        return (
+                          <label
+                            key={`${tt}:${val}`}
+                            className={`flex items-start gap-2 rounded-lg border px-2 py-1 text-xs dark:border-neutral-800 ${
+                              checked ? "bg-black text-white dark:bg-white dark:text-black" : ""
+                            }`}
+                            title={val}
+                          >
+                            <input
+                              type="checkbox"
+                              checked={checked}
+                              onChange={() => toggleTraitValue(tt, val)}
+                              className="mt-0.5 h-3 w-3"
+                            />
+                            <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{val}</span>
+                            <span
+                              className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] tabular-nums ${
+                                checked
+                                  ? "border-white/40 bg-white/10"
+                                  : "border-black/10 bg-black/5 dark:border-white/10 dark:bg-white/10"
+                              }`}
+                              title="Items with this value"
+                            >
+                              {count}
+                            </span>
+                          </label>
+                        );
+                      })}
+                    </div>
+                  </details>
+                );
+              })}
+            </div>
+
+            <p className="mt-2 text-[11px] opacity-60">
+              Select multiple values per trait (AND across traits, OR within each).
+            </p>
+          </div>
+        </aside>
 
         {/* RIGHT: Grid + infinite scroll */}
         <div>
-          {dbLoading && (
-            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
-              {Array.from({ length: 24 }).map((_, i) => (
+          <div
+            className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5"
+            style={{ contentVisibility: "auto", containIntrinsicSize: "800px" }}
+          >
+            {dbLoading &&
+              Array.from({ length: 24 }).map((_, i) => (
                 <div key={i} className="aspect-square animate-pulse rounded-xl bg-neutral-200 dark:bg-neutral-800" />
               ))}
-            </div>
-          )}
 
-          {!dbLoading && db && (
-            <>
-              <GalleryGrid
-                items={shown}
-                flashKey={flash}
-                stickyKey={sticky}
-                onCardClick={(item) => {
-                  startTransition(() => {
-                    const i = filteredSorted.findIndex(x => x.indexKey === item.indexKey);
-                    openWithData({
-                      items: modalItems,
-                      initialIndex: i,
-                      title: "MetaMartian details",
-                      collectionMint: db.collectionMint,
-                      rarityIndexSnapshot: snapshot,
-                    });
-                  });
-                }}
-                onCardHover={(item) => {
-                  // clear sticky highlight on hover of that card
-                  if (sticky === item.indexKey) {
-                    setSticky(null);
-                  }
-                }}
-                showMintedBadge={true}
-                mintedLookup={hasMinted}
-              />
-              <div ref={sentinelRef} className="h-12" />
-              {shown.length >= filteredSorted.length && (
-                <div className="py-6 text-center text-xs opacity-60">— end of collection —</div>
-              )}
-            </>
+            {!dbLoading &&
+              db &&
+              shown.map((it) => {
+                const isMinted = hasMinted(it.index);
+                const isHighlighted = stickyHighlight === it.index || flashHighlight === it.index; // combine flash + sticky
+
+                // Get display score/rank with coercion + cached fallback + binary search
+                const { score, rank } = getDisplayScoreRank(it);
+
+                return (
+                  <button
+                    key={it.index}
+                    id={`mm-card-${it.index}`}
+                    onMouseEnter={() => {
+                      // clear sticky highlight on hover of that card
+                      if (stickyHighlight === it.index) setStickyHighlight(null);
+                    }}
+                    onPointerEnter={() => {
+                      if (it.image) {
+                        const img = new Image();
+                        img.src = it.image;
+                      }
+                    }}
+                    onPointerDown={() => {
+                      if (it.image) {
+                        const img = new Image();
+                        img.src = it.image;
+                      }
+                    }}
+                    onClick={() => {
+                      startTransition(() => {
+                        const i = posByIndex.get(it.index) ?? 0; // use your memoized posByIndex
+                        openWithData({
+                          items: modalItems,                     // use your memoized modalItems
+                          initialIndex: i,
+                          title: "MetaMartian details",
+                          collectionMint: db!.collectionMint,
+                          rarityIndexSnapshot: {
+                            total: db!.items.length,
+                            traits: db!.traits,
+                            overall: db!.overall,
+                            traitAvg: db!.traitAvg,
+                          },
+                          // NOTE: no sticky highlight on regular clicks (only for "Find by number")
+                        });
+                      });
+                    }}
+                    className={`group relative overflow-hidden rounded-xl border text-left transition
+                      dark:border-neutral-800 hover:shadow-md
+                      ${isHighlighted ? "scale-[1.015]" : ""}
+                      ${!isHighlighted && stickyHighlight === it.index ? "ring-2 ring-emerald-400/70 shadow-[0_0_0_2px_rgba(16,185,129,.25)]" : ""}`}
+                    title="View details"
+                  >
+                    {isHighlighted && <FoundBeacon />}
+                    <div className="pointer-events-none absolute left-2 top-2 z-10 flex gap-1">
+                      <span
+                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                          isMinted
+                            ? "bg-emerald-500/90 text-white"
+                            : "bg-neutral-300/90 text-neutral-900 dark:bg-neutral-700/90 dark:text-white"
+                        }`}
+                      >
+                        {isMinted ? "Minted" : "Not minted"}
+                      </span>
+                    </div>
+
+                    <div className="aspect-square overflow-hidden bg-neutral-100 dark:bg-neutral-900">
+                      <img
+                        src={it.image}
+                        alt={it.name}
+                        className="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03] will-change-transform"
+                        draggable={false}
+                        loading="lazy"
+                        decoding="async"
+                        fetchPriority="low"
+                      />
+                    </div>
+                    {/* text */}
+                    <div className="p-2">
+                      <div className="truncate text-sm font-medium">{it.name}</div>
+
+                      {/* RARITY LINE — always visible with coercion + cached fallback */}
+                      <div className="text-[10px] opacity-60 whitespace-nowrap">
+                        Score: {Number.isFinite(score) ? Math.round(score).toLocaleString() : "—"} · #{Number.isFinite(rank) ? rank : "—"}
+                      </div>
+                    </div>
+                  </button>
+                );
+              })}
+          </div>
+
+          <div ref={sentinelRef} className="h-12" />
+          {shown.length >= (filteredSorted?.length || 0) && !dbLoading && (
+            <div className="py-6 text-center text-xs opacity-60">— end of collection —</div>
           )}
         </div>
       </div>
