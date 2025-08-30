@@ -53,6 +53,7 @@ function FoundBeacon() {
   );
 }
 
+
 export default function MetaMartianCollectionGallery({
   pageStep = 60,
   initialVisible = 120,
@@ -83,6 +84,14 @@ export default function MetaMartianCollectionGallery({
 
   const [, startTransition] = useTransition();
 
+  // Dock + traits sheet
+  const [dockOpen, setDockOpen] = useState(true);
+  const [traitsOpen, setTraitsOpen] = useState(false);
+
+  // Auto-hide on scroll
+  const [dockHiddenByScroll, setDockHiddenByScroll] = useState(false);
+  const prevYRef = useRef<number>(0);
+
   // DB store
   const db = useCollectionDB((s) => s.db);
   const loadDB = useCollectionDB((s) => s.load);
@@ -91,6 +100,8 @@ export default function MetaMartianCollectionGallery({
 
   // Wallet / signer
   const signer = useUmiStore((s) => s.signer);
+
+
 
   // A. derive an effective minter filter (auto-force "minted" when ownership = "mine")
   const effMinter = ownershipFilter === "mine" ? "minted" : minterFilter;
@@ -267,6 +278,51 @@ export default function MetaMartianCollectionGallery({
     return () => inflight?.abort();
   }, [ownershipFilter, signer?.publicKey, db?.collectionMint]);
 
+  // Auto-hide scroll listener
+  useEffect(() => {
+    if (!dockOpen) return; // manual hide wins
+
+    const THRESH_HIDE = 12;        // px down before we hide
+    const THRESH_SHOW = 6;         // px up before we show
+    const TOP_FORCE_SHOW = 40;     // always show near top
+    const BOTTOM_FORCE_SHOW = 160; // always show near bottom
+
+    let ticking = false;
+    prevYRef.current = window.scrollY;
+
+    const onScroll = () => {
+      const y = window.scrollY;
+      if (!ticking) {
+        window.requestAnimationFrame(() => {
+          const prev = prevYRef.current;
+          const dy = y - prev;
+          prevYRef.current = y;
+
+          const nearTop = y < TOP_FORCE_SHOW;
+          const nearBottom =
+            window.innerHeight + y >= document.body.scrollHeight - BOTTOM_FORCE_SHOW;
+
+          if (nearTop || nearBottom) {
+            setDockHiddenByScroll(false);
+          } else if (dy > THRESH_HIDE) {
+            // scrolling down
+            setDockHiddenByScroll(true);
+            setTraitsOpen(false); // close sheet when dock hides
+          } else if (dy < -THRESH_SHOW) {
+            // scrolling up
+            setDockHiddenByScroll(false);
+          }
+
+          ticking = false;
+        });
+        ticking = true;
+      }
+    };
+
+    window.addEventListener("scroll", onScroll, { passive: true });
+    return () => window.removeEventListener("scroll", onScroll);
+  }, [dockOpen]);
+
   const traitTypes = useMemo(() => (db ? Object.keys(db.traits || {}).sort() : []), [db]);
 
   const traitValuesByType = useMemo(() => {
@@ -277,6 +333,12 @@ export default function MetaMartianCollectionGallery({
     }
     return map;
   }, [db]);
+
+  // Count of selected trait chips
+  const selectedTraitCount = useMemo(
+    () => Object.values(selectedTraits).reduce((n, s) => n + s.size, 0),
+    [selectedTraits]
+  );
 
   // Single source of truth for trait filtering
   const traitFiltered = useMemo(() => {
@@ -589,141 +651,281 @@ export default function MetaMartianCollectionGallery({
         <div className="mb-4 rounded-xl border p-4 text-sm text-red-600 dark:border-neutral-800">{dbError}</div>
       )}
 
-      <div className="grid gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
-        {/* LEFT: controls */}
-        <aside className="lg:sticky lg:top-20 h-fit space-y-4 rounded-2xl border p-4 dark:border-neutral-800 bg-white/60 dark:bg-zinc-900/60 backdrop-blur">
-          {/* Search by # */}
-          <div className="space-y-1">
-            <div className="text-xs font-medium opacity-70">Find by number</div>
-            <div className="flex gap-2">
-              <input
-                inputMode="numeric"
-                pattern="[0-9]*"
-                value={searchNum}
-                onChange={(e) => setSearchNum(e.target.value.replace(/\D+/g, ""))}
-                onKeyDown={(e) => e.key === "Enter" && onSearch()}
-                className="h-9 w-28 rounded-lg border px-2 text-sm dark:border-neutral-700"
-                placeholder="e.g. 123"
-              />
+      {/* Cards grid — now uses the full container width on all breakpoints */}
+      <div className="pb-28">{/* bottom padding so the dock doesn't cover last row */}
+        <div
+          className="grid gap-3 grid-cols-2 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5 2xl:grid-cols-6"
+          style={{ contentVisibility: "auto", containIntrinsicSize: "800px" }}
+        >
+          {dbLoading &&
+            Array.from({ length: 24 }).map((_, i) => (
+              <div key={i} className="aspect-square animate-pulse rounded-xl bg-neutral-200 dark:bg-neutral-800" />
+            ))}
+
+          {!dbLoading && db && shown.map((it) => {
+            const isMinted = hasMinted(it.index);
+            const isHighlighted = stickyHighlight === it.index || flashHighlight === it.index;
+            const { score, rank } = getDisplayScoreRank(it);
+
+            return (
               <button
-                onClick={onSearch}
-                disabled={!searchNum}
-                className="h-9 rounded-lg border px-3 text-sm disabled:opacity-50 dark:border-neutral-700"
+                key={it.index}
+                id={`mm-card-${it.index}`}
+                onMouseEnter={() => { if (stickyHighlight === it.index) setStickyHighlight(null); }}
+                onPointerEnter={() => { if (it.image) { const img = new Image(); img.src = it.image; } }}
+                onPointerDown={() => { if (it.image) { const img = new Image(); img.src = it.image; } }}
+                onClick={() => {
+                  startTransition(() => {
+                    const i = posByIndex.get(it.index) ?? 0;
+                    openWithData({
+                      items: modalItems,
+                      initialIndex: i,
+                      title: "MetaMartian details",
+                      collectionMint: db!.collectionMint,
+                      rarityIndexSnapshot: {
+                        total: db!.items.length,
+                        traits: db!.traits,
+                        overall: db!.overall,
+                        traitAvg: db!.traitAvg,
+                      },
+                    });
+                  });
+                }}
+                className={`group relative overflow-hidden rounded-xl border text-left transition
+                  dark:border-neutral-800 hover:shadow-md
+                  ${isHighlighted ? "scale-[1.015]" : ""}`}
+                title="View details"
               >
-                Go
-              </button>
-            </div>
-            <p className="text-[11px] opacity-60">Jumps to the card and opens its details.</p>
-          </div>
+                {isHighlighted && <FoundBeacon />}
 
-          {/* Ownership (NEW) - Segmented Control */}
-          <div>
-            <div className="mb-1 flex items-center justify-between">
-              <div className="text-xs font-medium opacity-70">Ownership</div>
+                {!isMineView && (
+                  <div className="pointer-events-none absolute left-2 top-2 z-10 flex gap-1">
+                    {signer?.publicKey && isOwned(it) && (
+                      <span className="rounded-full bg-indigo-500/90 px-2 py-0.5 text-[10px] font-medium text-white">
+                        Mine
+                      </span>
+                    )}
+                    <span className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                      isMinted
+                        ? "bg-emerald-500/90 text-white"
+                        : "bg-neutral-300/90 text-neutral-900 dark:bg-neutral-700/90 dark:text-white"
+                    }`}>
+                      {isMinted ? "Minted" : "Not minted"}
+                    </span>
+                  </div>
+                )}
 
-              {/* show counts ONLY when Mine is selected; otherwise show nothing */}
-              {signer?.publicKey && ownershipFilter === "mine" && (
-                <div className="text-[10px] opacity-60">
-                  {walletLoading
-                    ? "Loading…"
-                    : walletFetched && typeof ownedCount === "number"
-                    ? `Mine (${ownedCount})`
-                    : "" /* no number if not fetched yet */}
+                <div className="aspect-square overflow-hidden bg-neutral-100 dark:bg-neutral-900">
+                  <img
+                    src={it.image}
+                    alt={it.name}
+                    className="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03] will-change-transform"
+                    draggable={false}
+                    loading="lazy"
+                    decoding="async"
+                    fetchPriority="low"
+                  />
                 </div>
-              )}
+
+                <div className="p-2">
+                  <div className="text-sm font-medium leading-tight overflow-hidden text-ellipsis whitespace-nowrap">
+                    {it.name}
+                  </div>
+                  <div className="text-[10px] opacity-60 whitespace-nowrap">
+                    Score: {Number.isFinite(score) ? Math.round(score).toLocaleString() : "—"} · #
+                    {Number.isFinite(rank) ? rank : "—"}
+                  </div>
+                </div>
+              </button>
+            );
+          })}
+        </div>
+
+        <div ref={sentinelRef} className="h-12" />
+        {shown.length >= (filteredSorted?.length || 0) && !dbLoading && (
+          <div className="py-6 text-center text-xs opacity-60">— end of collection —</div>
+        )}
+      </div>
+
+      {/* Toggle button when dock is hidden */}
+      {!dockOpen && (
+        <button
+          onClick={() => setDockOpen(true)}
+          className="fixed bottom-4 right-4 z-40 rounded-full border bg-white/90 px-4 py-2 text-sm shadow
+                     dark:bg-zinc-900/90 dark:border-neutral-800"
+          title="Show filters"
+        >
+          Show Filters
+        </button>
+      )}
+
+      {/* Bottom dock (wide + short) */}
+      {dockOpen && (
+        <div
+          className={`fixed inset-x-0 bottom-0 z-40 transition-transform duration-300 ${
+            dockHiddenByScroll ? "translate-y-full" : "translate-y-0"
+          }`}
+        >
+          <div className="mx-auto max-w-7xl px-3">
+            <div className="rounded-t-2xl border bg-white/90 p-3 shadow-lg backdrop-blur
+                            dark:bg-zinc-900/90 dark:border-neutral-800">
+
+              {/* Top row: toolbar */}
+              <div className="flex flex-wrap items-center gap-2">
+
+                {/* Hide */}
+                <button
+                  onClick={() => setDockOpen(false)}
+                  className="rounded-lg border px-3 py-1.5 text-xs dark:border-neutral-700"
+                  title="Hide filters"
+                >
+                  Hide
+                </button>
+
+                {/* Find by number */}
+                <div className="flex items-center gap-2">
+                  <input
+                    inputMode="numeric"
+                    pattern="[0-9]*"
+                    value={searchNum}
+                    onChange={(e) => setSearchNum(e.target.value.replace(/\D+/g, ""))}
+                    onKeyDown={(e) => e.key === "Enter" && onSearch()}
+                    className="h-9 w-28 rounded-lg border px-2 text-sm dark:border-neutral-700"
+                    placeholder="e.g. 123"
+                    title="Find by number"
+                  />
+                  <button
+                    onClick={onSearch}
+                    disabled={!searchNum}
+                    className="h-9 rounded-lg border px-3 text-sm disabled:opacity-50 dark:border-neutral-700"
+                  >
+                    Go
+                  </button>
+                </div>
+
+                {/* Ownership segmented */}
+                <div
+                  role="radiogroup"
+                  aria-label="Ownership"
+                  className="inline-flex overflow-hidden rounded-lg border dark:border-neutral-700"
+                >
+                  <button
+                    role="radio"
+                    aria-checked={ownershipFilter === "all"}
+                    onClick={() => onChangeOwnership("all")}
+                    className={`h-9 px-3 text-sm ${ownershipFilter === "all" ? "bg-black text-white dark:bg-white dark:text-black" : ""}`}
+                  >
+                    All
+                  </button>
+                  <button
+                    role="radio"
+                    aria-checked={ownershipFilter === "mine"}
+                    onClick={() => onChangeOwnership("mine")}
+                    disabled={!signer?.publicKey}
+                    title={!signer?.publicKey ? "Connect a wallet to use Mine" : ""}
+                    className={`h-9 px-3 text-sm border-l dark:border-neutral-700 disabled:opacity-50
+                                ${ownershipFilter === "mine" ? "bg-black text-white dark:bg-white dark:text-black" : ""}`}
+                  >
+                    {ownershipFilter === "mine"
+                      ? walletLoading
+                        ? "Mine (…)": walletFetched ? `Mine (${ownedCount})` : "Mine"
+                      : "Mine"}
+                  </button>
+                </div>
+
+                {/* Minted */}
+                <select
+                  value={minterFilter}
+                  onChange={(e) => setMinterFilter(e.target.value as any)}
+                  disabled={ownershipFilter === "mine"}
+                  title={ownershipFilter === "mine" ? "All owned NFTs are minted" : "Filter by minted status"}
+                  className="h-9 rounded-lg border px-2 text-sm dark:border-neutral-700"
+                >
+                  <option value="all">All</option>
+                  <option value="minted">Minted ({mintedCount})</option>
+                  <option value="unminted">Not minted ({unmintedCount})</option>
+                </select>
+
+                {/* Sort */}
+                <select
+                  value={sortKey}
+                  onChange={(e) => setSortKey(e.target.value as SortKey)}
+                  className="h-9 rounded-lg border px-2 text-sm dark:border-neutral-700"
+                  title="Sort"
+                >
+                  <option value="num-asc">Number ↑</option>
+                  <option value="num-desc">Number ↓</option>
+                  <option value="rarity-desc">Rarity ↑</option>
+                  <option value="rarity-asc">Rarity ↓</option>
+                </select>
+
+                {/* Traits sheet toggle */}
+                <button
+                  onClick={() => setTraitsOpen(true)}
+                  className="rounded-lg border px-3 py-1.5 text-sm dark:border-neutral-700"
+                  title="Filter by traits"
+                >
+                  Traits{selectedTraitCount ? ` (${selectedTraitCount})` : ""}
+                </button>
+
+                {/* Spacer */}
+                <div className="grow" />
+
+                {/* Jump controls (moved into dock) */}
+                <button
+                  onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+                  className="rounded-lg border px-3 py-1.5 text-xs dark:border-neutral-700"
+                  title="Top"
+                >
+                  Top
+                </button>
+                <button
+                  onClick={() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" })}
+                  className="rounded-lg border px-3 py-1.5 text-xs dark:border-neutral-700"
+                  title="Bottom"
+                >
+                  Bottom
+                </button>
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Traits sheet */}
+      {dockOpen && traitsOpen && (
+        <>
+          {/* dim background */}
+          <div
+            className="fixed inset-0 z-40 bg-black/30"
+            onClick={() => setTraitsOpen(false)}
+          />
+          <div
+            className="fixed z-50 bottom-16 left-1/2 -translate-x-1/2
+                       w-[min(100vw-1rem,80rem)] max-h-[65vh] overflow-y-auto
+                       rounded-2xl border bg-white/95 p-4 shadow-xl backdrop-blur
+                       dark:bg-zinc-900/95 dark:border-neutral-800"
+          >
+            <div className="mb-3 flex items-center justify-between">
+              <div className="text-sm font-medium opacity-70">Filter by traits</div>
+              <div className="flex gap-2">
+                <button
+                  onClick={clearAllTraits}
+                  className="rounded-lg border px-3 py-1.5 text-xs dark:border-neutral-700"
+                >
+                  Clear all
+                </button>
+                <button
+                  onClick={() => setTraitsOpen(false)}
+                  className="rounded-lg border px-3 py-1.5 text-xs dark:border-neutral-700"
+                >
+                  Done
+                </button>
+              </div>
             </div>
 
-            <div
-              role="radiogroup"
-              aria-label="Ownership filter"
-              onKeyDown={ownershipKeyNav}
-              className="inline-flex w-full rounded-lg border dark:border-neutral-700 overflow-hidden"
-            >
-              <button
-                role="radio"
-                aria-checked={ownershipFilter === "all"}
-                tabIndex={ownershipFilter === "all" ? 0 : -1}
-                onClick={() => onChangeOwnership("all")}
-                className={`h-9 flex-1 text-sm px-3 transition
-                  ${ownershipFilter === "all" ? "bg-black text-white dark:bg-white dark:text-black" : "bg-transparent"}
-                `}
-              >
-                All
-              </button>
-
-              <button
-                role="radio"
-                aria-checked={ownershipFilter === "mine"}
-                tabIndex={ownershipFilter === "mine" ? 0 : -1}
-                onClick={() => onChangeOwnership("mine")}
-                disabled={!signer?.publicKey} // ← only disabled when no wallet
-                title={!signer?.publicKey ? "Connect a wallet to use Mine" : ""}
-                className={`h-9 flex-1 text-sm px-3 border-l dark:border-neutral-700 transition
-                  ${ownershipFilter === "mine" ? "bg-black text-white dark:bg-white dark:text-black" : "bg-transparent"}
-                  disabled:opacity-50 disabled:cursor-not-allowed
-                `}
-              >
-                {/* Hide the number unless Mine is selected and fetched */}
-                {ownershipFilter === "mine"
-                  ? walletLoading
-                    ? "Mine (…)"
-                    : walletFetched && typeof ownedCount === "number"
-                    ? `Mine (${ownedCount})`
-                    : "Mine"
-                  : "Mine"}
-              </button>
-            </div>
-
-            {!signer?.publicKey && (
-              <p className="mt-1 text-[10px] opacity-60">
-                Connect a wallet to filter by Mine.
-              </p>
-            )}
-          </div>
-
-          {/* Minted */}
-          <div>
-            <div className="text-xs font-medium opacity-70">Minted</div>
-            <select
-              value={minterFilter}
-              onChange={(e) => setMinterFilter(e.target.value as any)}
-              disabled={ownershipFilter === "mine"}
-              className="mt-1 h-9 w-full rounded-lg border px-2 text-sm disabled:opacity-50 dark:border-neutral-700"
-              title={ownershipFilter === "mine" ? "All owned NFTs are minted" : "Filter by on-chain minted status"}
-            >
-              <option value="all">All</option>
-              <option value="minted">Minted ({mintedCount})</option>
-              <option value="unminted">Not minted ({unmintedCount})</option>
-            </select>
-          </div>
-
-          {/* Sort */}
-          <div>
-            <div className="text-xs font-medium opacity-70">Sort</div>
-            <select
-              value={sortKey}
-              onChange={(e) => setSortKey(e.target.value as SortKey)}
-              className="mt-1 h-9 w-full rounded-lg border px-2 text-sm dark:border-neutral-700"
-            >
-              <option value="num-asc">Number ↑</option>
-              <option value="num-desc">Number ↓</option>
-              <option value="rarity-desc">Rarity ↑ (rare first)</option>
-              <option value="rarity-asc">Rarity ↓ (common first)</option>
-            </select>
-          </div>
-
-          {/* Trait filters */}
-          <div>
-            <div className="mb-2 flex items-center justify-between">
-              <div className="text-xs font-medium opacity-70">Filter by traits</div>
-              <button onClick={clearAllTraits} className="text-xs opacity-80 underline hover:opacity-100">
-                Clear all
-              </button>
-            </div>
-
-            {!db && <div className="mb-2 text-[11px] opacity-70">Loading trait data…</div>}
-
-            <div className="max-h-[520px] space-y-2 overflow-y-auto pr-1">
+            {/* Same trait UI, just placed inside the sheet */}
+            <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
               {traitTypes.map((tt) => {
                 const values = traitValuesByType[tt] || [];
                 const selected = selectedTraits[tt] || new Set<string>();
@@ -764,7 +966,7 @@ export default function MetaMartianCollectionGallery({
                                     ? "border-white/40 bg-white/10"
                                     : "border-black/10 bg-black/5 dark:border-white/10 dark:bg-white/10"
                                 }`}
-                                title="Items with this value given current filters"
+                                title="Items with this value"
                               >
                                 {count}
                               </span>
@@ -777,144 +979,9 @@ export default function MetaMartianCollectionGallery({
                 );
               })}
             </div>
-
-            <p className="mt-2 text-[11px] opacity-60">
-              Select multiple values per trait (AND across traits, OR within each).
-            </p>
           </div>
-        </aside>
-
-        {/* RIGHT: Grid + infinite scroll */}
-        <div>
-          <div
-            className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5"
-            style={{ contentVisibility: "auto", containIntrinsicSize: "800px" }}
-          >
-            {dbLoading &&
-              Array.from({ length: 24 }).map((_, i) => (
-                <div key={i} className="aspect-square animate-pulse rounded-xl bg-neutral-200 dark:bg-neutral-800" />
-              ))}
-
-            {!dbLoading &&
-              db &&
-              shown.map((it) => {
-                const isMinted = hasMinted(it.index);
-                const isHighlighted = stickyHighlight === it.index || flashHighlight === it.index;
-
-                // Get display score/rank with coercion + cached fallback + binary search
-                const { score, rank } = getDisplayScoreRank(it);
-
-                return (
-                  <button
-                    key={it.index}
-                    id={`mm-card-${it.index}`}
-                    onMouseEnter={() => {
-                      if (stickyHighlight === it.index) setStickyHighlight(null);
-                    }}
-                    onPointerEnter={() => {
-                      if (it.image) {
-                        const img = new Image();
-                        img.src = it.image;
-                      }
-                    }}
-                    onPointerDown={() => {
-                      if (it.image) {
-                        const img = new Image();
-                        img.src = it.image;
-                      }
-                    }}
-                    onClick={() => {
-                      startTransition(() => {
-                        const i = posByIndex.get(it.index) ?? 0;
-                        openWithData({
-                          items: modalItems,
-                          initialIndex: i,
-                          title: "MetaMartian details",
-                          collectionMint: db!.collectionMint,
-                          rarityIndexSnapshot: {
-                            total: db!.items.length,
-                            traits: db!.traits,
-                            overall: db!.overall,
-                            traitAvg: db!.traitAvg,
-                          },
-                        });
-                      });
-                    }}
-                    className={`group relative overflow-hidden rounded-xl border text-left transition
-                      dark:border-neutral-800 hover:shadow-md
-                      ${isHighlighted ? "scale-[1.015]" : ""}`}
-                    title="View details"
-                  >
-                    {isHighlighted && <FoundBeacon />}
-
-                    {/* badges - hide when in Mine view */}
-                    {!isMineView && (
-                      <div className="pointer-events-none absolute left-2 top-2 z-10 flex gap-1">
-                        {signer?.publicKey && isOwned(it) && (
-                          <span className="rounded-full bg-indigo-500/90 px-2 py-0.5 text-[10px] font-medium text-white">
-                            Mine
-                          </span>
-                        )}
-                        <span
-                          className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                            isMinted
-                              ? "bg-emerald-500/90 text-white"
-                              : "bg-neutral-300/90 text-neutral-900 dark:bg-neutral-700/90 dark:text-white"
-                          }`}
-                        >
-                          {isMinted ? "Minted" : "Not minted"}
-                        </span>
-                      </div>
-                    )}
-
-                    <div className="aspect-square overflow-hidden bg-neutral-100 dark:bg-neutral-900">
-                      <img
-                        src={it.image}
-                        alt={it.name}
-                        className="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03] will-change-transform"
-                        draggable={false}
-                        loading="lazy"
-                        decoding="async"
-                        fetchPriority="low"
-                      />
-                    </div>
-
-                    <div className="p-2">
-                      <div className="truncate text-sm font-medium">{it.name}</div>
-                      <div className="text-[10px] opacity-60 whitespace-nowrap">
-                        Score: {Number.isFinite(score) ? Math.round(score).toLocaleString() : "—"} · #
-                        {Number.isFinite(rank) ? rank : "—"}
-                      </div>
-                    </div>
-                  </button>
-                );
-              })}
-          </div>
-
-          <div ref={sentinelRef} className="h-12" />
-          {shown.length >= (filteredSorted?.length || 0) && !dbLoading && (
-            <div className="py-6 text-center text-xs opacity-60">— end of collection —</div>
-          )}
-        </div>
-      </div>
-
-      {/* Jump controls */}
-      <div className="fixed bottom-4 right-4 z-50 flex flex-col gap-2">
-        <button
-          onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-          className="rounded-full border px-3 py-1.5 text-xs bg-white/80 backdrop-blur shadow hover:bg-white dark:bg-zinc-900/80 dark:hover:bg-zinc-900 dark:border-neutral-800"
-          title="Jump to top"
-        >
-          Top
-        </button>
-        <button
-          onClick={() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" })}
-          className="rounded-full border px-3 py-1.5 text-xs bg-white/80 backdrop-blur shadow hover:bg-white dark:bg-zinc-900/80 dark:hover:bg-zinc-900 dark:border-neutral-800"
-          title="Jump to bottom"
-        >
-          Bottom
-        </button>
-      </div>
+        </>
+      )}
     </div>
   );
 }

@@ -60,7 +60,7 @@ export default function GalleryPage() {
           instagram: "#",
           opensea: "#"
         }}
-        copyright="2024 MetaMartians. All rights reserved."
+        copyright="2025 MetaMartians. All rights reserved."
       />
     </>
   );
