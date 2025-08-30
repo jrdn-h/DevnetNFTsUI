@@ -5,8 +5,10 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import useMetaMartianReveal from "@/hooks/useMetaMartianReveal";
 import { refreshMintedCacheOnce } from "@/lib/mintedCache";
 import { useCollectionDB, type CollectionDB } from "@/store/useCollectionDB";
+import useUmiStore from "@/store/useUmiStore"; // NEW: for signer/wallet
 
 type SortKey = "num-asc" | "num-desc" | "rarity-asc" | "rarity-desc";
+type OwnershipFilter = "all" | "mine";
 
 // trait normalization (used in filters)
 const normType = (x: any) => {
@@ -20,7 +22,13 @@ const normVal = (v: any) =>
     ? JSON.stringify(v)
     : String(v);
 
+// Module-scope cache for wallet collections (shared across component instances)
+const walletCache: Map<string, {ts: number; uri: Set<string>; name: Set<string>}> =
+  (globalThis as any).__mmWalletCache ?? new Map();
+(globalThis as any).__mmWalletCache = walletCache;
 
+// Global inflight request controller
+let inflight: AbortController | null = null;
 
 function FoundBeacon() {
   return (
@@ -66,9 +74,10 @@ export default function MetaMartianCollectionGallery({
   const [visible, setVisible] = useState(initialVisible);
   const sentinelRef = useRef<HTMLDivElement | null>(null);
   const [searchNum, setSearchNum] = useState<string>("");
-  const [highlight, setHighlight] = useState<string | null>(null);
 
+  const [highlight, setHighlight] = useState<string | null>(null);
   const [minterFilter, setMinterFilter] = useState<"all" | "minted" | "unminted">("all");
+  const [ownershipFilter, setOwnershipFilter] = useState<OwnershipFilter>("all"); // NEW
   const [sortKey, setSortKey] = useState<SortKey>("num-asc");
   const [selectedTraits, setSelectedTraits] = useState<Record<string, Set<string>>>({});
 
@@ -80,15 +89,43 @@ export default function MetaMartianCollectionGallery({
   const dbLoading = useCollectionDB((s) => s.loading);
   const dbError = useCollectionDB((s) => s.error);
 
-  // NEW: persistent highlight that survives until user hovers the card
+  // Wallet / signer
+  const signer = useUmiStore((s) => s.signer);
+
+  // A. derive an effective minter filter (auto-force "minted" when ownership = "mine")
+  const effMinter = ownershipFilter === "mine" ? "minted" : minterFilter;
+
+  // B. when Ownership changes, just update the filter
+  const onChangeOwnership = (val: OwnershipFilter) => {
+    setOwnershipFilter(val);
+  };
+
+  // C. keyboard navigation for segmented control
+  const ownershipKeyNav = (e: React.KeyboardEvent<HTMLDivElement>) => {
+    if (e.key === "ArrowRight" || e.key === "ArrowLeft") {
+      onChangeOwnership(ownershipFilter === "all" ? "mine" : "all");
+      e.preventDefault();
+    }
+  };
+
+  // D. helper to check if we're in Mine view
+  const isMineView = ownershipFilter === "mine";
+
+  // NEW: wallet-owned lookups
+  const [walletUriSet, setWalletUriSet] = useState<Set<string>>(new Set());
+  const [walletNameSet, setWalletNameSet] = useState<Set<string>>(new Set());
+  const [walletLoading, setWalletLoading] = useState(false);
+  const [walletErr, setWalletErr] = useState<string | null>(null);
+  const [walletFetched, setWalletFetched] = useState(false);
+
+  // persistent highlight
   const [stickyHighlight, setStickyHighlight] = useState<string | null>(null);
 
   // Flash highlight for found cards
-  const HIGHLIGHT_MS = 1600; // how long the big flashy effect lasts
+  const HIGHLIGHT_MS = 1600;
   const [flashHighlight, setFlashHighlight] = useState<string | null>(null);
   const flashTimerRef = useRef<number | null>(null);
 
-  // Cleanup timer on unmount
   useEffect(() => {
     return () => {
       if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
@@ -114,13 +151,12 @@ export default function MetaMartianCollectionGallery({
     (idxStr: string) => {
       const n = Number(idxStr);
       if (Number.isFinite(n) && mintedFlags.length) return mintedFlags[n] === 1;
-      // fallback for non-numeric indexes
       return mintedSet.has(idxStr);
     },
     [mintedFlags, mintedSet]
   );
 
-  // Background scroll follower: listens to modal nav events
+  // Background scroll follower
   useEffect(() => {
     const onScrollToCard = (e: any) => {
       const key: string | undefined = e?.detail?.indexKey;
@@ -175,6 +211,62 @@ export default function MetaMartianCollectionGallery({
     };
   }, [db?.collectionMint, RPC]);
 
+  // NEW: Optimized wallet-owned assets fetch with caching and lazy loading
+  useEffect(() => {
+    const wantMine = ownershipFilter === "mine";
+    if (!wantMine || !signer?.publicKey || !db?.collectionMint) {
+      setWalletUriSet(new Set());
+      setWalletNameSet(new Set());
+      setWalletErr(null);
+      return;
+    }
+
+    const key = `${signer.publicKey}:${db.collectionMint}`;
+    const cached = walletCache.get(key);
+    const FRESH_MS = 5 * 60 * 1000; // 5 minutes TTL
+
+    if (cached && Date.now() - cached.ts < FRESH_MS) {
+      setWalletUriSet(cached.uri);
+      setWalletNameSet(cached.name);
+      return;
+    }
+
+    inflight?.abort();
+    inflight = new AbortController();
+
+    (async () => {
+      setWalletFetched(false); // reset when we start a new fetch
+      setWalletLoading(true);
+      setWalletErr(null);
+      try {
+        const res = await fetch(`/api/wallet-collection?owner=${signer.publicKey}&collection=${db.collectionMint}`, {
+          cache: "no-store",
+          signal: inflight.signal,
+        });
+        if (!res.ok) throw new Error(`API ${res.status}`);
+        const assets: any[] = await res.json();
+
+        const uri = new Set<string>(), name = new Set<string>();
+        for (const a of assets) {
+          const u = a?.content?.json_uri ?? a?.content?.metadata?.uri;
+          const n = a?.content?.metadata?.name ?? a?.content?.json?.name;
+          if (u) uri.add(u);
+          if (n) name.add(n);
+        }
+        setWalletUriSet(uri);
+        setWalletNameSet(name);
+        walletCache.set(key, { ts: Date.now(), uri, name });
+      } catch (e: any) {
+        if (!(e as any)?.name?.includes("Abort")) setWalletErr((e as any)?.message ?? String(e));
+      } finally {
+        setWalletFetched(true); // mark as fetched even on error
+        setWalletLoading(false);
+      }
+    })();
+
+    return () => inflight?.abort();
+  }, [ownershipFilter, signer?.publicKey, db?.collectionMint]);
+
   const traitTypes = useMemo(() => (db ? Object.keys(db.traits || {}).sort() : []), [db]);
 
   const traitValuesByType = useMemo(() => {
@@ -186,7 +278,7 @@ export default function MetaMartianCollectionGallery({
     return map;
   }, [db]);
 
-  // ADD: single source of truth for trait filtering
+  // Single source of truth for trait filtering
   const traitFiltered = useMemo(() => {
     let arr: CollectionDB["items"] = db?.items ?? [];
     const active = Object.keys(selectedTraits);
@@ -204,15 +296,76 @@ export default function MetaMartianCollectionGallery({
     return arr;
   }, [db?.items, selectedTraits]);
 
-  // REPLACE: minted/unminted counts derived from the traitFiltered list
-  const { mintedCount, unmintedCount } = useMemo(() => {
+  // Helper: is this item owned by connected wallet?
+  const isOwned = useCallback(
+    (it: CollectionDB["items"][number]) => {
+      if (!walletUriSet.size && !walletNameSet.size) return false;
+      return (it.metadata && walletUriSet.has(it.metadata)) || (it.name && walletNameSet.has(it.name));
+    },
+    [walletUriSet, walletNameSet]
+  );
+
+  // NEW: base list after Ownership + Minted filters
+  const baseAfterOwnerMinter = useMemo(() => {
+    if (!db) return [] as CollectionDB["items"];
+    let arr = db.items;
+
+    const effOwnership = signer?.publicKey ? ownershipFilter : "all";
+    if (effOwnership === "mine") arr = arr.filter((it) => isOwned(it));
+
+    if (effMinter === "minted") arr = arr.filter((it) => hasMinted(it.index));
+    else if (effMinter === "unminted") arr = arr.filter((it) => !hasMinted(it.index));
+
+    return arr;
+  }, [db, signer?.publicKey, ownershipFilter, effMinter, isOwned, hasMinted]);
+
+  // NEW: facet counts per trait value given current filters
+  const facetCounts = useMemo(() => {
+    const out: Record<string, Record<string, number>> = {};
+    if (!db) return out;
+
+    const traitMap = db.traits || {};
+    const types = Object.keys(traitMap);
+    for (const tt of types) out[tt] = Object.create(null) as Record<string, number>;
+
+    // helper: does item pass currently selected traits EXCEPT `exceptTT`?
+    const passesExcept = (it: CollectionDB["items"][number], exceptTT: string) => {
+      for (const tt of Object.keys(selectedTraits)) {
+        if (tt === exceptTT) continue;
+        const allowed = selectedTraits[tt];
+        const found = it.attributes?.find((a) => normType(a?.trait_type) === tt);
+        const val = found ? normVal(found.value) : "None";
+        if (!allowed.has(val)) return false;
+      }
+      return true;
+    };
+
+    for (const tt of Object.keys(traitMap)) {
+      for (const it of baseAfterOwnerMinter) {
+        if (!passesExcept(it, tt)) continue;
+        const found = it.attributes?.find((a) => normType(a?.trait_type) === tt);
+        const val = found ? normVal(found.value) : "None";
+        out[tt][val] = (out[tt][val] || 0) + 1;
+      }
+    }
+    return out;
+  }, [db, baseAfterOwnerMinter, selectedTraits]);
+
+  // Derived counts based on current trait filter (so counts reflect filters)
+  const { mintedCount, unmintedCount, ownedCount } = useMemo(() => {
     const base = traitFiltered;
     let minted = 0;
+    let owned = 0;
     for (let i = 0; i < base.length; i++) {
       if (hasMinted(base[i].index)) minted++;
+      if (isOwned(base[i])) owned++;
     }
-    return { mintedCount: minted, unmintedCount: Math.max(0, base.length - minted) };
-  }, [traitFiltered, hasMinted]);
+    return {
+      mintedCount: minted,
+      unmintedCount: Math.max(0, base.length - minted),
+      ownedCount: owned,
+    };
+  }, [traitFiltered, hasMinted, isOwned]);
 
   const toggleTraitValue = (tt: string, val: string) => {
     setSelectedTraits((prev) => {
@@ -226,13 +379,17 @@ export default function MetaMartianCollectionGallery({
   };
   const clearAllTraits = () => setSelectedTraits({});
 
-  // REPLACE: build the grid list from the same traitFiltered list
+  // Build the grid list from the filtered source (traits → ownership → minted → sort)
   const filteredSorted = useMemo(() => {
     let arr = traitFiltered;
 
-    if (minterFilter === "minted") {
+    if (ownershipFilter === "mine") {
+      arr = arr.filter((it) => isOwned(it));
+    }
+
+    if (effMinter === "minted") {
       arr = arr.filter((it) => hasMinted(it.index));
-    } else if (minterFilter === "unminted") {
+    } else if (effMinter === "unminted") {
       arr = arr.filter((it) => !hasMinted(it.index));
     }
 
@@ -252,7 +409,7 @@ export default function MetaMartianCollectionGallery({
         break;
     }
     return out;
-  }, [traitFiltered, minterFilter, sortKey, hasMinted]);
+  }, [traitFiltered, ownershipFilter, effMinter, sortKey, hasMinted, isOwned]);
 
   // Fast index → position lookup in the current filtered+sorted view
   const posByIndex = useMemo(() => {
@@ -284,55 +441,66 @@ export default function MetaMartianCollectionGallery({
   }, [db]);
 
   // Fast single-item score (fallback) from DB traits
-  const computeScoreFromTraits = useCallback((attrs: any[]): number => {
-    if (!db) return NaN;
-    const total = Math.max(1, db.items.length);
-    let sum = 0;
-    const traitsMap = db.traits || {};
-    for (const tt of Object.keys(traitsMap)) {
-      const found = attrs?.find?.((a: any) => {
-        const s = (a?.trait_type ?? "—").toString().trim();
-        return s.length ? s === tt : "—" === tt;
-      });
-      const val = found?.value == null || found?.value === "" ? "None"
-        : typeof found.value === "object" ? JSON.stringify(found.value) : String(found.value);
-      const count = traitsMap[tt]?.[val] ?? 0;
-      sum += total / Math.max(1, count);
-    }
-    return sum;
-  }, [db]);
+  const computeScoreFromTraits = useCallback(
+    (attrs: any[]): number => {
+      if (!db) return NaN;
+      const total = Math.max(1, db.items.length);
+      let sum = 0;
+      const traitsMap = db.traits || {};
+      for (const tt of Object.keys(traitsMap)) {
+        const found = attrs?.find?.((a: any) => {
+          const s = (a?.trait_type ?? "—").toString().trim();
+          return s.length ? s === tt : "—" === tt;
+        });
+        const val =
+          found?.value == null || found?.value === ""
+            ? "None"
+            : typeof found.value === "object"
+            ? JSON.stringify(found.value)
+            : String(found.value);
+        const count = traitsMap[tt]?.[val] ?? 0;
+        sum += total / Math.max(1, count);
+      }
+      return sum;
+    },
+    [db]
+  );
 
   // Get display score/rank with coercion + cached fallback + binary search
-  const getDisplayScoreRank = useCallback((it: CollectionDB["items"][number]) => {
-    // coerce score
-    let score = typeof it.score === "number" ? it.score : Number(it.score);
-    if (!Number.isFinite(score)) {
-      const cached = scoreCacheRef.current.get(it.index);
-      if (cached != null) {
-        score = cached;
-      } else {
-        score = computeScoreFromTraits(it.attributes || []);
-        if (Number.isFinite(score)) {
-          scoreCacheRef.current.set(it.index, score);
+  const getDisplayScoreRank = useCallback(
+    (it: CollectionDB["items"][number]) => {
+      // coerce score
+      let score = typeof it.score === "number" ? it.score : Number(it.score);
+      if (!Number.isFinite(score)) {
+        const cached = scoreCacheRef.current.get(it.index);
+        if (cached != null) {
+          score = cached;
+        } else {
+          score = computeScoreFromTraits(it.attributes || []);
+          if (Number.isFinite(score)) {
+            scoreCacheRef.current.set(it.index, score);
+          }
         }
       }
-    }
 
-    // coerce rank or derive from sorted scores (1 = highest)
-    let rank = typeof it.rank === "number" ? it.rank : Number(it.rank);
-    if (!Number.isFinite(rank) && sortedScoresDesc.length && Number.isFinite(score)) {
-      // count of scores > my score (binary search)
-      const arr = sortedScoresDesc;
-      let lo = 0, hi = arr.length;
-      while (lo < hi) {
-        const mid = (lo + hi) >> 1;
-        if (arr[mid] > score) lo = mid + 1; else hi = mid;
+      // coerce rank or derive from sorted scores (1 = highest)
+      let rank = typeof it.rank === "number" ? it.rank : Number(it.rank);
+      if (!Number.isFinite(rank) && sortedScoresDesc.length && Number.isFinite(score)) {
+        const arr = sortedScoresDesc;
+        let lo = 0,
+          hi = arr.length;
+        while (lo < hi) {
+          const mid = (lo + hi) >> 1;
+          if (arr[mid] > score) lo = mid + 1;
+          else hi = mid;
+        }
+        rank = lo + 1;
       }
-      rank = lo + 1;
-    }
 
-    return { score, rank };
-  }, [computeScoreFromTraits, sortedScoresDesc]);
+      return { score, rank };
+    },
+    [computeScoreFromTraits, sortedScoresDesc]
+  );
 
   // Infinite scroll growth
   useEffect(() => {
@@ -348,7 +516,6 @@ export default function MetaMartianCollectionGallery({
     return () => obs.unobserve(el);
   }, [pageStep, filteredSorted.length]);
 
-  // Find-by-number
   // Find-by-number (O(1) lookup)
   const onSearch = useCallback(() => {
     const nHuman = Number(searchNum.trim());
@@ -361,10 +528,11 @@ export default function MetaMartianCollectionGallery({
     setVisible((v) => Math.max(v, i + Math.max(24, pageStep)));
     const item = filteredSorted[i];
 
-    // Preload hero image (non-blocking)
-    if (item?.image) { const img = new Image(); img.src = item.image; }
+    if (item?.image) {
+      const img = new Image();
+      img.src = item.image;
+    }
 
-    // Flash highlight immediately (respect reduced motion)
     const prefersReducedMotion =
       typeof window !== "undefined" &&
       window.matchMedia &&
@@ -375,11 +543,9 @@ export default function MetaMartianCollectionGallery({
       if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
       flashTimerRef.current = window.setTimeout(() => setFlashHighlight(null), HIGHLIGHT_MS);
     } else {
-      // Go straight to sticky accent
       setStickyHighlight(item.index);
     }
 
-    // Open quickly with prebuilt items
     openWithData({
       items: modalItems,
       initialIndex: i,
@@ -391,11 +557,9 @@ export default function MetaMartianCollectionGallery({
         overall: db.overall,
         traitAvg: db.traitAvg,
       },
-      // Sticky highlight is applied AFTER closing the modal
       onModalClose: () => setStickyHighlight(item.index),
     });
 
-    // Optionally center it behind the modal immediately
     requestAnimationFrame(() => {
       const el = document.getElementById(`mm-card-${item.index}`);
       if (el) el.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -408,14 +572,17 @@ export default function MetaMartianCollectionGallery({
     <div className="w-full">
       {Modal}
 
-      <div className="mb-3">
-        <h3 className="text-base font-semibold">
-          Entire Collection{" "}
-          {db?.collectionMint ? `· ${db.collectionMint.slice(0, 4)}…${db.collectionMint.slice(-4)}` : ""}
-        </h3>
-        <div className="text-xs opacity-70">
-          {dbLoading ? "Loading collection data…" : db ? `${db.items.length.toLocaleString()} items` : "Loading…"}
+      <div className="mb-3 flex items-start justify-between gap-3">
+        <div>
+          <h3 className="text-base font-semibold">
+            Entire Collection{" "}
+            {db?.collectionMint ? `· ${db.collectionMint.slice(0, 4)}…${db.collectionMint.slice(-4)}` : ""}
+          </h3>
+          <div className="text-xs opacity-70">
+            {dbLoading ? "Loading collection data…" : db ? `${db.items.length.toLocaleString()} items` : "Loading…"}
+          </div>
         </div>
+
       </div>
 
       {dbError && !dbLoading && (
@@ -449,13 +616,80 @@ export default function MetaMartianCollectionGallery({
             <p className="text-[11px] opacity-60">Jumps to the card and opens its details.</p>
           </div>
 
+          {/* Ownership (NEW) - Segmented Control */}
+          <div>
+            <div className="mb-1 flex items-center justify-between">
+              <div className="text-xs font-medium opacity-70">Ownership</div>
+
+              {/* show counts ONLY when Mine is selected; otherwise show nothing */}
+              {signer?.publicKey && ownershipFilter === "mine" && (
+                <div className="text-[10px] opacity-60">
+                  {walletLoading
+                    ? "Loading…"
+                    : walletFetched && typeof ownedCount === "number"
+                    ? `Mine (${ownedCount})`
+                    : "" /* no number if not fetched yet */}
+                </div>
+              )}
+            </div>
+
+            <div
+              role="radiogroup"
+              aria-label="Ownership filter"
+              onKeyDown={ownershipKeyNav}
+              className="inline-flex w-full rounded-lg border dark:border-neutral-700 overflow-hidden"
+            >
+              <button
+                role="radio"
+                aria-checked={ownershipFilter === "all"}
+                tabIndex={ownershipFilter === "all" ? 0 : -1}
+                onClick={() => onChangeOwnership("all")}
+                className={`h-9 flex-1 text-sm px-3 transition
+                  ${ownershipFilter === "all" ? "bg-black text-white dark:bg-white dark:text-black" : "bg-transparent"}
+                `}
+              >
+                All
+              </button>
+
+              <button
+                role="radio"
+                aria-checked={ownershipFilter === "mine"}
+                tabIndex={ownershipFilter === "mine" ? 0 : -1}
+                onClick={() => onChangeOwnership("mine")}
+                disabled={!signer?.publicKey} // ← only disabled when no wallet
+                title={!signer?.publicKey ? "Connect a wallet to use Mine" : ""}
+                className={`h-9 flex-1 text-sm px-3 border-l dark:border-neutral-700 transition
+                  ${ownershipFilter === "mine" ? "bg-black text-white dark:bg-white dark:text-black" : "bg-transparent"}
+                  disabled:opacity-50 disabled:cursor-not-allowed
+                `}
+              >
+                {/* Hide the number unless Mine is selected and fetched */}
+                {ownershipFilter === "mine"
+                  ? walletLoading
+                    ? "Mine (…)"
+                    : walletFetched && typeof ownedCount === "number"
+                    ? `Mine (${ownedCount})`
+                    : "Mine"
+                  : "Mine"}
+              </button>
+            </div>
+
+            {!signer?.publicKey && (
+              <p className="mt-1 text-[10px] opacity-60">
+                Connect a wallet to filter by Mine.
+              </p>
+            )}
+          </div>
+
           {/* Minted */}
           <div>
             <div className="text-xs font-medium opacity-70">Minted</div>
             <select
               value={minterFilter}
               onChange={(e) => setMinterFilter(e.target.value as any)}
-              className="mt-1 h-9 w-full rounded-lg border px-2 text-sm dark:border-neutral-700"
+              disabled={ownershipFilter === "mine"}
+              className="mt-1 h-9 w-full rounded-lg border px-2 text-sm disabled:opacity-50 dark:border-neutral-700"
+              title={ownershipFilter === "mine" ? "All owned NFTs are minted" : "Filter by on-chain minted status"}
             >
               <option value="all">All</option>
               <option value="minted">Minted ({mintedCount})</option>
@@ -506,7 +740,8 @@ export default function MetaMartianCollectionGallery({
                     <div className="mt-2 grid grid-cols-2 gap-1">
                       {values.map((val) => {
                         const checked = selected.has(val);
-                        const count = db?.traits?.[tt]?.[val] ?? 0;
+                        const hideFacetCounts = ownershipFilter === "mine" && !walletFetched;
+                        const count = hideFacetCounts ? undefined : facetCounts[tt]?.[val] ?? 0;
                         return (
                           <label
                             key={`${tt}:${val}`}
@@ -522,16 +757,18 @@ export default function MetaMartianCollectionGallery({
                               className="mt-0.5 h-3 w-3"
                             />
                             <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{val}</span>
-                            <span
-                              className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] tabular-nums ${
-                                checked
-                                  ? "border-white/40 bg-white/10"
-                                  : "border-black/10 bg-black/5 dark:border-white/10 dark:bg-white/10"
-                              }`}
-                              title="Items with this value"
-                            >
-                              {count}
-                            </span>
+                            {typeof count === "number" && (
+                              <span
+                                className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] tabular-nums ${
+                                  checked
+                                    ? "border-white/40 bg-white/10"
+                                    : "border-black/10 bg-black/5 dark:border-white/10 dark:bg-white/10"
+                                }`}
+                                title="Items with this value given current filters"
+                              >
+                                {count}
+                              </span>
+                            )}
                           </label>
                         );
                       })}
@@ -562,7 +799,7 @@ export default function MetaMartianCollectionGallery({
               db &&
               shown.map((it) => {
                 const isMinted = hasMinted(it.index);
-                const isHighlighted = stickyHighlight === it.index || flashHighlight === it.index; // combine flash + sticky
+                const isHighlighted = stickyHighlight === it.index || flashHighlight === it.index;
 
                 // Get display score/rank with coercion + cached fallback + binary search
                 const { score, rank } = getDisplayScoreRank(it);
@@ -572,7 +809,6 @@ export default function MetaMartianCollectionGallery({
                     key={it.index}
                     id={`mm-card-${it.index}`}
                     onMouseEnter={() => {
-                      // clear sticky highlight on hover of that card
                       if (stickyHighlight === it.index) setStickyHighlight(null);
                     }}
                     onPointerEnter={() => {
@@ -589,9 +825,9 @@ export default function MetaMartianCollectionGallery({
                     }}
                     onClick={() => {
                       startTransition(() => {
-                        const i = posByIndex.get(it.index) ?? 0; // use your memoized posByIndex
+                        const i = posByIndex.get(it.index) ?? 0;
                         openWithData({
-                          items: modalItems,                     // use your memoized modalItems
+                          items: modalItems,
                           initialIndex: i,
                           title: "MetaMartian details",
                           collectionMint: db!.collectionMint,
@@ -601,28 +837,35 @@ export default function MetaMartianCollectionGallery({
                             overall: db!.overall,
                             traitAvg: db!.traitAvg,
                           },
-                          // NOTE: no sticky highlight on regular clicks (only for "Find by number")
                         });
                       });
                     }}
                     className={`group relative overflow-hidden rounded-xl border text-left transition
                       dark:border-neutral-800 hover:shadow-md
-                      ${isHighlighted ? "scale-[1.015]" : ""}
-                      ${!isHighlighted && stickyHighlight === it.index ? "ring-2 ring-emerald-400/70 shadow-[0_0_0_2px_rgba(16,185,129,.25)]" : ""}`}
+                      ${isHighlighted ? "scale-[1.015]" : ""}`}
                     title="View details"
                   >
                     {isHighlighted && <FoundBeacon />}
-                    <div className="pointer-events-none absolute left-2 top-2 z-10 flex gap-1">
-                      <span
-                        className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
-                          isMinted
-                            ? "bg-emerald-500/90 text-white"
-                            : "bg-neutral-300/90 text-neutral-900 dark:bg-neutral-700/90 dark:text-white"
-                        }`}
-                      >
-                        {isMinted ? "Minted" : "Not minted"}
-                      </span>
-                    </div>
+
+                    {/* badges - hide when in Mine view */}
+                    {!isMineView && (
+                      <div className="pointer-events-none absolute left-2 top-2 z-10 flex gap-1">
+                        {signer?.publicKey && isOwned(it) && (
+                          <span className="rounded-full bg-indigo-500/90 px-2 py-0.5 text-[10px] font-medium text-white">
+                            Mine
+                          </span>
+                        )}
+                        <span
+                          className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
+                            isMinted
+                              ? "bg-emerald-500/90 text-white"
+                              : "bg-neutral-300/90 text-neutral-900 dark:bg-neutral-700/90 dark:text-white"
+                          }`}
+                        >
+                          {isMinted ? "Minted" : "Not minted"}
+                        </span>
+                      </div>
+                    )}
 
                     <div className="aspect-square overflow-hidden bg-neutral-100 dark:bg-neutral-900">
                       <img
@@ -635,13 +878,12 @@ export default function MetaMartianCollectionGallery({
                         fetchPriority="low"
                       />
                     </div>
-                    {/* text */}
+
                     <div className="p-2">
                       <div className="truncate text-sm font-medium">{it.name}</div>
-
-                      {/* RARITY LINE — always visible with coercion + cached fallback */}
                       <div className="text-[10px] opacity-60 whitespace-nowrap">
-                        Score: {Number.isFinite(score) ? Math.round(score).toLocaleString() : "—"} · #{Number.isFinite(rank) ? rank : "—"}
+                        Score: {Number.isFinite(score) ? Math.round(score).toLocaleString() : "—"} · #
+                        {Number.isFinite(rank) ? rank : "—"}
                       </div>
                     </div>
                   </button>

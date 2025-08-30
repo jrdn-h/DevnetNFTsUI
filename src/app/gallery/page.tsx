@@ -1,7 +1,7 @@
 "use client";
 
 import Navigation from "@/components/Navigation";
-import MetaMartianGallery from "@/components/MetaMartianGallery";
+import MetaMartianCollectionGallery from "@/components/MetaMartianCollectionGallery";
 import Footer from "@/components/sections/Footer";
 
 export default function GalleryPage() {
@@ -13,16 +13,16 @@ export default function GalleryPage() {
           {/* Header Section */}
           <div className="text-center py-4">
             <h1 className="text-4xl md:text-5xl font-bold text-gray-900 dark:text-white mb-6">
-              Your MetaMartian Gallery
+              MetaMartian Collection
             </h1>
             <p className="text-xl text-gray-600 dark:text-gray-300 max-w-3xl mx-auto leading-relaxed">
-              Explore your collection of unique MetaMartians. Each character tells a story from across the cosmos.
+              Explore the complete MetaMartian collection with advanced filtering. Connect your wallet to see your owned assets or browse the entire collection with rarity rankings and trait filters.
             </p>
           </div>
 
           {/* Gallery Content */}
           <div className="bg-gray-50 dark:bg-zinc-800 rounded-3xl p-6 lg:p-8">
-            <MetaMartianGallery pageSize={16} />
+            <MetaMartianCollectionGallery pageStep={16} />
           </div>
         </div>
       </main>
