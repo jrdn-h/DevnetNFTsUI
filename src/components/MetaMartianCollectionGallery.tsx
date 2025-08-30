@@ -3,6 +3,32 @@
 import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from "react";
 
 import useMetaMartianReveal from "@/hooks/useMetaMartianReveal";
+
+// ---- UI TOKENS (glassy) ----
+const ui = {
+  glass:
+    "border border-white/20 bg-white/10 backdrop-blur-xl " +
+    "dark:border-white/10 dark:bg-white/5",
+  ring:
+    "ring-1 ring-white/15 dark:ring-white/10",
+  btn:
+    "rounded-xl border border-white/20 bg-white/10 px-3 py-1.5 text-xs " +
+    "backdrop-blur-md hover:bg-white/15 hover:border-white/30 " +
+    "active:scale-[.99] transition dark:border-white/10",
+  input:
+    "h-9 rounded-xl px-3 text-sm outline-none border border-white/20 " +
+    "bg-white/10 backdrop-blur-md focus:ring-2 focus:ring-emerald-400/40 " +
+    "dark:border-white/10 placeholder:opacity-60 dark:placeholder:opacity-60",
+  select:
+    "appearance-none h-9 rounded-xl pr-8 pl-3 text-sm outline-none " +
+    "border border-white/20 bg-white/10 backdrop-blur-md " +
+    "focus:ring-2 focus:ring-emerald-400/40 dark:border-white/10",
+  chip:
+    "rounded-full border border-white/20 bg-white/10 px-2.5 py-1 text-xs " +
+    "backdrop-blur-md hover:bg-white/15 hover:border-white/30 " +
+    "transition dark:border-white/10",
+};
+
 import { refreshMintedCacheOnce } from "@/lib/mintedCache";
 import { useCollectionDB, type CollectionDB } from "@/store/useCollectionDB";
 import useUmiStore from "@/store/useUmiStore"; // NEW: for signer/wallet
@@ -33,21 +59,21 @@ let inflight: AbortController | null = null;
 function FoundBeacon() {
   return (
     <>
-      {/* soft spinning gradient halo */}
+      {/* vivid spinning halo */}
       <span
-        className="pointer-events-none absolute -inset-[3px] rounded-2xl
-                   bg-[conic-gradient(at_50%_50%,#22c55e_0deg,#06b6d4_120deg,#a78bfa_240deg,#22c55e_360deg)]
-                   animate-[spin_2.8s_linear_infinite] opacity-55 blur-md"
+        className="pointer-events-none absolute -inset-6 rounded-2xl
+                   bg-[conic-gradient(at_50%_50%,#34d399_0deg,#06b6d4_120deg,#a78bfa_240deg,#34d399_360deg)]
+                   animate-[spin_3s_linear_infinite] opacity-80 blur-2xl mix-blend-screen"
       />
-      {/* bright ring + glow */}
+      {/* bright ring + deep bloom */}
       <span
-        className="pointer-events-none absolute inset-0 rounded-xl ring-4 ring-emerald-400/80
-                   shadow-[0_0_0_3px_rgba(16,185,129,.50),0_0_40px_12px_rgba(16,185,129,.35)]"
+        className="pointer-events-none absolute inset-0 rounded-xl ring-4 ring-emerald-400/90
+                   shadow-[0_0_0_4px_rgba(16,185,129,.6),0_0_60px_18px_rgba(16,185,129,.45),0_0_120px_32px_rgba(6,182,212,.35)]"
       />
       {/* ripple ping */}
       <span
-        className="pointer-events-none absolute left-1/2 top-1/2 h-28 w-28 -translate-x-1/2 -translate-y-1/2
-                   rounded-full border-2 border-emerald-400/50 animate-ping"
+        className="pointer-events-none absolute left-1/2 top-1/2 h-32 w-32 -translate-x-1/2 -translate-y-1/2
+                   rounded-full border-2 border-emerald-300/70 animate-ping"
       />
     </>
   );
@@ -88,9 +114,37 @@ export default function MetaMartianCollectionGallery({
   const [dockOpen, setDockOpen] = useState(true);
   const [traitsOpen, setTraitsOpen] = useState(false);
 
-  // Auto-hide on scroll
+  // Auto-hide on scroll + idle re-show
   const [dockHiddenByScroll, setDockHiddenByScroll] = useState(false);
   const prevYRef = useRef<number>(0);
+  const idleTimerRef = useRef<number | null>(null);
+
+  // Traits UX
+  const [traitQuery, setTraitQuery] = useState("");
+
+  // Selected chips
+  const selectedPairs = useMemo(() => {
+    const out: { tt: string; val: string }[] = [];
+    for (const [tt, setVals] of Object.entries(selectedTraits)) {
+      Array.from(setVals as Set<string>).forEach(val => {
+        out.push({ tt, val });
+      });
+    }
+    return out;
+  }, [selectedTraits]);
+
+  const removeTraitValue = (tt: string, val: string) => {
+    setSelectedTraits((prev) => {
+      const next: Record<string, Set<string>> = {};
+      for (const k of Object.keys(prev)) next[k] = new Set(prev[k]);
+      const s = next[tt];
+      if (s) {
+        s.delete(val);
+        if (s.size === 0) delete next[tt];
+      }
+      return next;
+    });
+  };
 
   // DB store
   const db = useCollectionDB((s) => s.db);
@@ -282,16 +336,27 @@ export default function MetaMartianCollectionGallery({
   useEffect(() => {
     if (!dockOpen) return; // manual hide wins
 
-    const THRESH_HIDE = 12;        // px down before we hide
-    const THRESH_SHOW = 6;         // px up before we show
+    const THRESH_HIDE = 12;        // px down before hide
+    const THRESH_SHOW = 6;         // px up before show
     const TOP_FORCE_SHOW = 40;     // always show near top
     const BOTTOM_FORCE_SHOW = 160; // always show near bottom
+    const IDLE_MS = 420;           // show after scrolling stops
 
     let ticking = false;
     prevYRef.current = window.scrollY;
 
     const onScroll = () => {
       const y = window.scrollY;
+
+      // idle re-show timer
+      if (idleTimerRef.current) {
+        window.clearTimeout(idleTimerRef.current);
+        idleTimerRef.current = null;
+      }
+      idleTimerRef.current = window.setTimeout(() => {
+        setDockHiddenByScroll(false);
+      }, IDLE_MS);
+
       if (!ticking) {
         window.requestAnimationFrame(() => {
           const prev = prevYRef.current;
@@ -320,7 +385,29 @@ export default function MetaMartianCollectionGallery({
     };
 
     window.addEventListener("scroll", onScroll, { passive: true });
-    return () => window.removeEventListener("scroll", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll);
+      if (idleTimerRef.current) window.clearTimeout(idleTimerRef.current);
+    };
+  }, [dockOpen]);
+
+  // Mouse/touch reveal effect
+  useEffect(() => {
+    if (!dockOpen) return;
+
+    const onMove = (e: MouseEvent) => {
+      // show if mouse nears the bottom 104px of the viewport
+      if (e.clientY > window.innerHeight - 104) setDockHiddenByScroll(false);
+    };
+    const onTouchStart = () => setDockHiddenByScroll(false);
+
+    window.addEventListener("mousemove", onMove, { passive: true });
+    window.addEventListener("touchstart", onTouchStart, { passive: true });
+
+    return () => {
+      window.removeEventListener("mousemove", onMove);
+      window.removeEventListener("touchstart", onTouchStart);
+    };
   }, [dockOpen]);
 
   const traitTypes = useMemo(() => (db ? Object.keys(db.traits || {}).sort() : []), [db]);
@@ -762,23 +849,30 @@ export default function MetaMartianCollectionGallery({
       {/* Bottom dock (wide + short) */}
       {dockOpen && (
         <div
-          className={`fixed inset-x-0 bottom-0 z-40 transition-transform duration-300 ${
-            dockHiddenByScroll ? "translate-y-full" : "translate-y-0"
+          className={`fixed left-1/2 bottom-6 z-40 -translate-x-1/2 transition-transform duration-300 ${
+            dockHiddenByScroll ? "translate-y-[140%]" : "translate-y-0"
           }`}
         >
-          <div className="mx-auto max-w-7xl px-3">
-            <div className="rounded-t-2xl border bg-white/90 p-3 shadow-lg backdrop-blur
-                            dark:bg-zinc-900/90 dark:border-neutral-800">
+          {/* group enables hover lift */}
+          <div className="relative group w-[min(100vw-1rem,80rem)] px-3">
 
-              {/* Top row: toolbar */}
+            {/* Ambient glow (strong, layered; intensifies on hover) */}
+            <span className="pointer-events-none absolute inset-0 -z-10 transition-opacity duration-200">
+              <span
+                className="absolute -inset-8 rounded-[2rem]
+                           bg-[radial-gradient(40%_60%_at_50%_100%,rgba(6,182,212,.45),transparent_60%),radial-gradient(40%_60%_at_0%_0%,rgba(167,139,250,.5),transparent_60%),radial-gradient(40%_60%_at_100%_0%,rgba(52,211,153,.5),transparent_60%)]
+                           blur-3xl opacity-90 mix-blend-screen group-hover:opacity-100"
+              />
+            </span>
+
+            {/* Gradient edge + glass card */}
+            <div className="relative rounded-[1.35rem] p-[1px] bg-gradient-to-br from-white/30 via-white/10 to-transparent">
+              <div
+                className={`rounded-[1.35rem] p-3 shadow-2xl ${ui.glass} ${ui.ring} transition-transform duration-200 group-hover:-translate-y-0.5`}
+              >
               <div className="flex flex-wrap items-center gap-2">
-
                 {/* Hide */}
-                <button
-                  onClick={() => setDockOpen(false)}
-                  className="rounded-lg border px-3 py-1.5 text-xs dark:border-neutral-700"
-                  title="Hide filters"
-                >
+                <button onClick={() => setDockOpen(false)} className={ui.btn} title="Hide filters">
                   Hide
                 </button>
 
@@ -790,41 +884,42 @@ export default function MetaMartianCollectionGallery({
                     value={searchNum}
                     onChange={(e) => setSearchNum(e.target.value.replace(/\D+/g, ""))}
                     onKeyDown={(e) => e.key === "Enter" && onSearch()}
-                    className="h-9 w-28 rounded-lg border px-2 text-sm dark:border-neutral-700"
+                    className={`${ui.input} w-28`}
                     placeholder="e.g. 123"
                     title="Find by number"
                   />
-                  <button
-                    onClick={onSearch}
-                    disabled={!searchNum}
-                    className="h-9 rounded-lg border px-3 text-sm disabled:opacity-50 dark:border-neutral-700"
-                  >
+                  <button onClick={onSearch} disabled={!searchNum} className={`${ui.btn} disabled:opacity-50`}>
                     Go
                   </button>
                 </div>
 
-                {/* Ownership segmented */}
-                <div
-                  role="radiogroup"
-                  aria-label="Ownership"
-                  className="inline-flex overflow-hidden rounded-lg border dark:border-neutral-700"
-                >
+                {/* Ownership segmented (glassy) */}
+                <div role="radiogroup" aria-label="Ownership"
+                     className={`inline-flex overflow-hidden rounded-xl ${ui.glass} ${ui.ring}`}>
                   <button
                     role="radio"
                     aria-checked={ownershipFilter === "all"}
                     onClick={() => onChangeOwnership("all")}
-                    className={`h-9 px-3 text-sm ${ownershipFilter === "all" ? "bg-black text-white dark:bg-white dark:text-black" : ""}`}
+                    className={`h-9 px-3 text-sm transition ${
+                      ownershipFilter === "all"
+                        ? "bg-white/20 dark:bg-white/10"
+                        : "hover:bg-white/10"
+                    }`}
                   >
                     All
                   </button>
+                  <div className="w-px bg-white/20 dark:bg-white/10" />
                   <button
                     role="radio"
                     aria-checked={ownershipFilter === "mine"}
                     onClick={() => onChangeOwnership("mine")}
                     disabled={!signer?.publicKey}
                     title={!signer?.publicKey ? "Connect a wallet to use Mine" : ""}
-                    className={`h-9 px-3 text-sm border-l dark:border-neutral-700 disabled:opacity-50
-                                ${ownershipFilter === "mine" ? "bg-black text-white dark:bg-white dark:text-black" : ""}`}
+                    className={`h-9 px-3 text-sm transition disabled:opacity-50 ${
+                      ownershipFilter === "mine"
+                        ? "bg-white/20 dark:bg-white/10"
+                        : "hover:bg-white/10"
+                    }`}
                   >
                     {ownershipFilter === "mine"
                       ? walletLoading
@@ -833,36 +928,48 @@ export default function MetaMartianCollectionGallery({
                   </button>
                 </div>
 
-                {/* Minted */}
-                <select
-                  value={minterFilter}
-                  onChange={(e) => setMinterFilter(e.target.value as any)}
-                  disabled={ownershipFilter === "mine"}
-                  title={ownershipFilter === "mine" ? "All owned NFTs are minted" : "Filter by minted status"}
-                  className="h-9 rounded-lg border px-2 text-sm dark:border-neutral-700"
-                >
-                  <option value="all">All</option>
-                  <option value="minted">Minted ({mintedCount})</option>
-                  <option value="unminted">Not minted ({unmintedCount})</option>
-                </select>
+                {/* Minted select (glassy with chevron) */}
+                <div className="relative">
+                  <select
+                    value={minterFilter}
+                    onChange={(e) => setMinterFilter(e.target.value as any)}
+                    disabled={ownershipFilter === "mine"}
+                    title={ownershipFilter === "mine" ? "All owned NFTs are minted" : "Filter by minted status"}
+                    className={`${ui.select} pr-9 disabled:opacity-60`}
+                  >
+                    <option value="all">All</option>
+                    <option value="minted">Minted ({mintedCount})</option>
+                    <option value="unminted">Not minted ({unmintedCount})</option>
+                  </select>
+                  <svg className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 opacity-60"
+                       viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M5.5 7.5l4.5 4.5 4.5-4.5" />
+                  </svg>
+                </div>
 
-                {/* Sort */}
-                <select
-                  value={sortKey}
-                  onChange={(e) => setSortKey(e.target.value as SortKey)}
-                  className="h-9 rounded-lg border px-2 text-sm dark:border-neutral-700"
-                  title="Sort"
-                >
-                  <option value="num-asc">Number ↑</option>
-                  <option value="num-desc">Number ↓</option>
-                  <option value="rarity-desc">Rarity ↑</option>
-                  <option value="rarity-asc">Rarity ↓</option>
-                </select>
+                {/* Sort select (glassy with chevron) */}
+                <div className="relative">
+                  <select
+                    value={sortKey}
+                    onChange={(e) => setSortKey(e.target.value as SortKey)}
+                    className={`${ui.select} pr-9`}
+                    title="Sort"
+                  >
+                    <option value="num-asc">Number ↑</option>
+                    <option value="num-desc">Number ↓</option>
+                    <option value="rarity-desc">Rarity ↑</option>
+                    <option value="rarity-asc">Rarity ↓</option>
+                  </select>
+                  <svg className="pointer-events-none absolute right-2 top-1/2 -translate-y-1/2 h-4 w-4 opacity-60"
+                       viewBox="0 0 20 20" fill="currentColor">
+                    <path d="M5.5 7.5l4.5 4.5 4.5-4.5" />
+                  </svg>
+                </div>
 
                 {/* Traits sheet toggle */}
                 <button
                   onClick={() => setTraitsOpen(true)}
-                  className="rounded-lg border px-3 py-1.5 text-sm dark:border-neutral-700"
+                  className={`${ui.btn} ${traitsOpen || selectedTraitCount ? "ring-1 ring-emerald-400/40" : ""}`}
                   title="Filter by traits"
                 >
                   Traits{selectedTraitCount ? ` (${selectedTraitCount})` : ""}
@@ -871,23 +978,18 @@ export default function MetaMartianCollectionGallery({
                 {/* Spacer */}
                 <div className="grow" />
 
-                {/* Jump controls (moved into dock) */}
-                <button
-                  onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
-                  className="rounded-lg border px-3 py-1.5 text-xs dark:border-neutral-700"
-                  title="Top"
-                >
+                {/* Jump controls */}
+                <button onClick={() => window.scrollTo({ top: 0, behavior: "smooth" })}
+                        className={ui.btn} title="Top">
                   Top
                 </button>
-                <button
-                  onClick={() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" })}
-                  className="rounded-lg border px-3 py-1.5 text-xs dark:border-neutral-700"
-                  title="Bottom"
-                >
+                <button onClick={() => window.scrollTo({ top: document.body.scrollHeight, behavior: "smooth" })}
+                        className={ui.btn} title="Bottom">
                   Bottom
                 </button>
               </div>
             </div>
+          </div>
           </div>
         </div>
       )}
@@ -900,84 +1002,118 @@ export default function MetaMartianCollectionGallery({
             className="fixed inset-0 z-40 bg-black/30"
             onClick={() => setTraitsOpen(false)}
           />
+
+          {/* floating above the dock */}
           <div
-            className="fixed z-50 bottom-16 left-1/2 -translate-x-1/2
-                       w-[min(100vw-1rem,80rem)] max-h-[65vh] overflow-y-auto
-                       rounded-2xl border bg-white/95 p-4 shadow-xl backdrop-blur
-                       dark:bg-zinc-900/95 dark:border-neutral-800"
+            className="fixed z-50 bottom-[7.5rem] left-1/2 -translate-x-1/2
+                         w-[min(100vw-1rem,80rem)] max-h-[70vh] overflow-y-auto
+                         rounded-[1.35rem] p-[1px] bg-gradient-to-br from-white/30 via-white/10 to-transparent"
           >
-            <div className="mb-3 flex items-center justify-between">
-              <div className="text-sm font-medium opacity-70">Filter by traits</div>
-              <div className="flex gap-2">
-                <button
-                  onClick={clearAllTraits}
-                  className="rounded-lg border px-3 py-1.5 text-xs dark:border-neutral-700"
-                >
-                  Clear all
-                </button>
-                <button
-                  onClick={() => setTraitsOpen(false)}
-                  className="rounded-lg border px-3 py-1.5 text-xs dark:border-neutral-700"
-                >
-                  Done
-                </button>
+            <div className={`rounded-[1.35rem] ${ui.glass} ${ui.ring} shadow-2xl`}>
+            {/* sticky header (glassy) + consistent controls */}
+            <div className={`sticky top-0 z-10 p-3 border-b border-white/20 dark:border-white/10
+                             bg-white/10 dark:bg-white/5 backdrop-blur-xl`}>
+              <div className="flex items-center gap-2">
+                <div className="text-sm font-medium">Filter by traits</div>
+                <div className="grow" />
+                <input
+                  value={traitQuery}
+                  onChange={(e) => setTraitQuery(e.target.value)}
+                  placeholder="Search traits/values"
+                  className={`${ui.input} w-56`}
+                />
+                <button onClick={clearAllTraits} className={ui.btn}>Clear all</button>
+                <button onClick={() => setTraitsOpen(false)} className={ui.btn}>Done</button>
               </div>
+
+              {selectedPairs.length > 0 && (
+                <div className="mt-2 flex flex-wrap gap-2">
+                  {selectedPairs.map(({ tt, val }) => (
+                    <button
+                      key={`${tt}:${val}`}
+                      onClick={() => removeTraitValue(tt, val)}
+                      className={`${ui.chip} group`}
+                      title="Remove"
+                    >
+                      <span className="opacity-70">{tt}:</span> {val}
+                      <span className="ml-1 opacity-60 group-hover:opacity-100">×</span>
+                    </button>
+                  ))}
+                </div>
+              )}
             </div>
 
-            {/* Same trait UI, just placed inside the sheet */}
-            <div className="grid gap-2 sm:grid-cols-2 md:grid-cols-3">
+            {/* content */}
+            <div className="p-3 columns-1 sm:columns-2 md:columns-3 gap-x-4 [column-fill:_balance]">
               {traitTypes.map((tt) => {
                 const values = traitValuesByType[tt] || [];
                 const selected = selectedTraits[tt] || new Set<string>();
+
+                const q = traitQuery.trim().toLowerCase();
+                const filteredValues = q
+                  ? values.filter(
+                      (v) =>
+                        v.toLowerCase().includes(q) || tt.toLowerCase().includes(q)
+                    )
+                  : values;
+
                 const selectedCount = selected.size;
+                const open = q ? filteredValues.length > 0 : selectedCount > 0;
+
+                if (!filteredValues.length && !selectedCount) return null;
+
                 return (
-                  <details key={tt} className="group rounded-lg border px-2 py-1 dark:border-neutral-800">
+                  <details
+                    key={tt}
+                    open={open}
+                    className="mb-3 inline-block w-full break-inside-avoid rounded-xl border border-white/20
+                               p-2 transition-[box-shadow,transform] duration-200
+                               bg-white/10 backdrop-blur-md dark:border-white/10 dark:bg-white/5
+                               open:shadow-lg open:ring-1 open:ring-emerald-400/40"
+                  >
                     <summary className="flex cursor-pointer list-none items-center justify-between py-1">
-                      <span className="text-sm">{tt}</span>
+                      <span className="text-sm font-medium">{tt}</span>
                       <span className="text-[10px] opacity-60">
                         {selectedCount > 0 ? `${selectedCount} selected` : `${values.length}`}
                       </span>
                     </summary>
 
                     <div className="mt-2 grid grid-cols-2 gap-1">
-                      {values.map((val) => {
+                      {filteredValues.map((val) => {
                         const checked = selected.has(val);
                         const hideFacetCounts = ownershipFilter === "mine" && !walletFetched;
                         const count = hideFacetCounts ? undefined : facetCounts[tt]?.[val] ?? 0;
+
                         return (
-                          <label
+                          <button
+                            type="button"
                             key={`${tt}:${val}`}
-                            className={`flex items-start gap-2 rounded-lg border px-2 py-1 text-xs dark:border-neutral-800 ${
-                              checked ? "bg-black text-white dark:bg-white dark:text-black" : ""
-                            }`}
+                            onClick={() => toggleTraitValue(tt, val)}
+                            className={`flex items-center justify-between rounded-lg px-2 py-1 text-xs transition
+                                        ${checked
+                                          ? "bg-white/20 dark:bg-white/10 text-black dark:text-white"
+                                          : "hover:bg-white/10"
+                                        } ${ui.ring} ${ui.glass.replace("backdrop-blur-xl","backdrop-blur-md")}`}
                             title={val}
                           >
-                            <input
-                              type="checkbox"
-                              checked={checked}
-                              onChange={() => toggleTraitValue(tt, val)}
-                              className="mt-0.5 h-3 w-3"
-                            />
-                            <span className="min-w-0 flex-1 whitespace-normal break-words leading-snug">{val}</span>
+                            <span className="min-w-0 flex-1 truncate">{val}</span>
                             {typeof count === "number" && (
                               <span
-                                className={`shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] tabular-nums ${
-                                  checked
-                                    ? "border-white/40 bg-white/10"
-                                    : "border-black/10 bg-black/5 dark:border-white/10 dark:bg-white/10"
-                                }`}
+                                className={`ml-2 shrink-0 rounded-full px-1.5 py-0.5 text-[10px] tabular-nums
+                                            border border-white/20 bg-white/10 dark:border-white/10`}
                                 title="Items with this value"
                               >
                                 {count}
                               </span>
                             )}
-                          </label>
+                          </button>
                         );
                       })}
                     </div>
                   </details>
                 );
               })}
+            </div>
             </div>
           </div>
         </>
