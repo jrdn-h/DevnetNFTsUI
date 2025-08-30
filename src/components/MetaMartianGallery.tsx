@@ -10,9 +10,6 @@ import { scoreFromAttrs } from "@/lib/rarity/utils";
 
 import { publicKey } from "@metaplex-foundation/umi";
 import { fetchCandyMachine } from "@metaplex-foundation/mpl-candy-machine";
-import { fetchMetadata, findMetadataPda } from "@metaplex-foundation/mpl-token-metadata";
-import { Connection, PublicKey as Web3Pk } from "@solana/web3.js";
-import { TOKEN_PROGRAM_ID, TOKEN_2022_PROGRAM_ID } from "@solana/spl-token";
 
 const WalletMultiButton = dynamic(
   async () => (await import("@solana/wallet-adapter-react-ui")).WalletMultiButton,
@@ -110,114 +107,45 @@ export default function MetaMartianGallery({
     }
   }, [collectionMint, loadDB]);
 
-  // load wallet NFTs and filter by collection
+  // load wallet NFTs and filter by collection (DAS approach)
   useEffect(() => {
+    if (!signer || !collectionMint) return;
     let cancelled = false;
-    async function run() {
-      if (!signer || !collectionMint) return;
 
+    (async () => {
       setLoading(true);
       setErr(null);
-      setItems([]);
       try {
-        const conn = new Connection(endpoint, "confirmed");
-        const owner = new Web3Pk(signer.publicKey.toString());
-
-        // Token + Token-2022 accounts owned by wallet
-        const [classic, t22] = await Promise.all([
-          conn.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_PROGRAM_ID }),
-          conn.getParsedTokenAccountsByOwner(owner, { programId: TOKEN_2022_PROGRAM_ID }).catch(() => ({ value: [] as any[] })),
-        ]);
-
-        // Extract NFT mints (amount=1, decimals=0)
-        const extractMints = (arr: any[]) =>
-          arr
-            .map((a) => a.account?.data?.parsed?.info)
-            .filter(Boolean)
-            .filter((info: any) => {
-              const amt = info?.tokenAmount;
-              return amt?.amount === "1" && Number(amt?.decimals ?? 0) === 0;
-            })
-            .map((info: any) => String(info?.mint));
-
-        const mints = Array.from(new Set<string>([
-          ...extractMints(classic.value),
-          ...extractMints(t22.value),
-        ]));
-
-        if (mints.length === 0) {
-          if (!cancelled) {
-            setItems([]);
-            setLoading(false);
-          }
-          return;
+        const url = `/api/wallet-collection?owner=${signer.publicKey}&collection=${collectionMint}`;
+        const res = await fetch(url, { cache: "no-store" }); // SSR route has its own caching
+        if (!res.ok) {
+          throw new Error(`API error: ${res.status}`);
         }
+        const assets: any[] = await res.json();
 
-        // Fetch metadata & filter by verified collection
-        const cards: Card[] = [];
-        await Promise.allSettled(
-          mints.map(async (mintStr) => {
-            try {
-              const mdPda = findMetadataPda(umi, { mint: publicKey(mintStr) });
-              const md = await fetchMetadata(umi, mdPda);
-              const belongs =
-                md.collection &&
-                md.collection.__option === "Some" &&
-                md.collection.value.key.toString() === collectionMint &&
-                Boolean(md.collection.value.verified);
-              if (!belongs) return;
+        if (cancelled) return;
 
-              let name = md.name ?? "MetaMartian";
-              let image: string | undefined;
-              let uri: string | undefined;
-              let attributes: any[] | undefined;
-              if (md.uri) {
-                uri = md.uri;
-                try {
-                  const res = await fetch(md.uri);
-                  const json = await res.json();
-                  name = json?.name ?? name;
-                  image = json?.image;
-                  attributes = Array.isArray(json?.attributes) ? json.attributes : undefined;
-                } catch {}
-              }
-              // dbItem by metadata URI (may be undefined if gateway/uri differs)
-              const dbItem = uri ? getItemByMetadata(uri) : undefined;
+        // Pre-build O(1) DB lookups
+        const byUri = new Map(db?.items?.map(i => [i.metadata, i]) ?? []);
+        const byName = new Map(db?.items?.map(i => [i.name, i]) ?? []);
 
-              // Snapshot from DB (for fallback calc)
-              const snap = db ? {
-                total: db.items.length,
-                traits: db.traits,
-                overall: db.overall,
-                traitAvg: db.traitAvg,
-              } : undefined;
+        const cards = assets.map((a: any) => {
+          const mint = a.id as string;
+          const name = a.content?.metadata?.name ?? a.content?.json?.name ?? "MetaMartian";
+          const image = a.content?.links?.image ?? a.content?.json?.image;
+          const uri = a.content?.json_uri ?? a.content?.metadata?.uri;
 
-              // Compute fallback score from attrs + snapshot when missing
-              const computedScore = Number.isFinite(dbItem?.score)
-                ? Number(dbItem!.score)
-                : (attributes && snap) ? scoreFromAttrs(attributes, snap) : NaN;
-
-              // Compute fallback rank from global score list when needed (1 = rarest)
-              let computedRank: number | undefined = Number.isFinite(dbItem?.rank) ? Number(dbItem!.rank) : undefined;
-              if (!Number.isFinite(computedRank) && Number.isFinite(computedScore) && db) {
-                const arr = db.items.map(i => Number(i.score)).filter(Number.isFinite).sort((a, b) => b - a);
-                let lo = 0, hi = arr.length;
-                while (lo < hi) { const mid = (lo + hi) >> 1; if (arr[mid] > computedScore) lo = mid + 1; else hi = mid; }
-                computedRank = lo + 1;
-              }
-
-              cards.push({
-                mint: mintStr,
-                name,
-                image,
-                uri,
-                attributes,
-                rarityScore: computedScore,
-                rarityRank: computedRank,
-              });
-            } catch {}
-          })
-        );
+          const dbItem = (uri && byUri.get(uri)) || byName.get(name);
+          return {
+            mint,
+            name,
+            image,
+            uri,
+            attributes: dbItem?.attributes ?? a.content?.json?.attributes,
+            rarityScore: dbItem?.score,
+            rarityRank: dbItem?.rank
+          };
+        });
 
         // sort by trailing number if present
         cards.sort((a, b) => {
@@ -237,9 +165,10 @@ export default function MetaMartianGallery({
       } finally {
         if (!cancelled) setLoading(false);
       }
-    }
-    run();
-  }, [signer, collectionMint, endpoint, umi, getItemByMetadata]);
+    })();
+
+    return () => { cancelled = true; };
+  }, [signer?.publicKey, collectionMint, db?.items]);
 
   // pagination
   const total = items.length;
@@ -265,7 +194,7 @@ export default function MetaMartianGallery({
       <div className="flex items-center justify-between">
         <h3 className="text-lg font-semibold">Your MetaMartians</h3>
         <div className="text-xs opacity-70 ml-4">
-          {loading ? "Loading…" : total === 0 ? "None found" : `${total} found`}
+          {loading ? "Loading…" : err ? "Error" : total === 0 ? "None found" : `${total} found`}
         </div>
       </div>
 
@@ -273,7 +202,10 @@ export default function MetaMartianGallery({
 
       {!err && (
         <>
-          <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3">
+          <div
+            className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3"
+            style={{ contentVisibility: 'auto', containIntrinsicSize: '800px' }}
+          >
             {pageItems.map((it) => (
               <button
                 key={it.mint}
@@ -335,6 +267,9 @@ export default function MetaMartianGallery({
                       alt={it.name}
                       className="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03] will-change-transform"
                       draggable={false}
+                      loading="lazy"
+                      decoding="async"
+                      fetchPriority="low"
                     />
                   ) : (
                     <div className="h-full w-full grid place-items-center text-xs opacity-60">
