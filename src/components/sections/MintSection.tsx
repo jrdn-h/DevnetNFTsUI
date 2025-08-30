@@ -8,12 +8,10 @@ type MintPhase = "live" | "upcoming" | "paused" | "soldout" | "ended";
 interface MintSectionProps {
   title?: string;
   description?: string;
-  /** SOL as number for math; fallback to string if needed */
+  /** Optional SSR fallback until button fetches the real price */
   priceSol?: number;
   /** Optional precomputed USD price per SOL */
   solUsd?: number;
-  /** Estimated fees in SOL to display (not charged by contract) */
-  estFeeSol?: number; // e.g. 0.02
   /** Optional known status/phase */
   phase?: MintPhase;
   /** ISO timestamp for start if upcoming (enables countdown) */
@@ -28,7 +26,6 @@ export default function MintSection({
   description = "Join the cosmic adventure by minting your unique MetaMartian. Each one is procedurally generated with rare traits and comes with its own story from across the universe.",
   priceSol = 0.1,
   solUsd,
-  estFeeSol = 0.02,
   phase = "live",
   startsAtIso,
   mintImage,
@@ -42,26 +39,24 @@ export default function MintSection({
   ],
 }: MintSectionProps) {
   const [supplyRefreshTrigger, setSupplyRefreshTrigger] = useState(0);
+  const [priceSolLive, setPriceSolLive] = useState<number | undefined>(undefined);
 
   const handleMintSuccess = () => {
     // Increment the refresh trigger to update supply after successful mint
     setSupplyRefreshTrigger(prev => prev + 1);
   };
-  // derived labels
+
+  // Prefer live price from button; fall back to prop
+  const effectivePriceSol = priceSolLive ?? priceSol;
   const priceUsd = useMemo(
-    () => (solUsd ? (priceSol * solUsd).toFixed(2) : undefined),
-    [priceSol, solUsd]
-  );
-  const feeUsd = useMemo(
-    () => (solUsd ? (estFeeSol * solUsd).toFixed(2) : undefined),
-    [estFeeSol, solUsd]
+    () => (solUsd ? (effectivePriceSol * solUsd).toFixed(2) : undefined),
+    [effectivePriceSol, solUsd]
   );
 
   // Formatting helpers
   const formatSol = (n: number, maxDp = 4) =>
     Number(n).toLocaleString(undefined, { maximumFractionDigits: maxDp });
-  const priceSolFmt = useMemo(() => formatSol(priceSol, 3), [priceSol]);
-  const feeSolFmt = useMemo(() => formatSol(estFeeSol, 3), [estFeeSol]);
+  const priceSolFmt = useMemo(() => formatSol(effectivePriceSol, 3), [effectivePriceSol]);
 
   // Phase chips
   const phaseChip = {
@@ -132,15 +127,15 @@ export default function MintSection({
             </div>
 
             {/* Secondary info under preview */}
-            <dl className="mt-4 grid grid-cols-2 gap-2 text-sm">
+            <dl className="mt-4 grid grid-cols-1 gap-2 text-sm">
               <div className="rounded-xl border dark:border-neutral-800 p-3">
                 <dt className="opacity-60">Price</dt>
-                <dd className="font-tech">{priceSolFmt} SOL{priceUsd ? ` · ~$${priceUsd}` : ""}</dd>
+                <dd className="font-tech">
+                  {priceSolLive == null ? "—" : `${priceSolFmt} SOL`}
+                  {priceUsd ? ` · ~$${priceUsd}` : ""}
+                </dd>
               </div>
-              <div className="rounded-xl border dark:border-neutral-800 p-3">
-                <dt className="opacity-60">Est. Fee</dt>
-                <dd className="font-tech">{feeSolFmt} SOL{feeUsd ? ` · ~$${feeUsd}` : ""}</dd>
-              </div>
+              {/* REMOVE the Est. Fee block entirely */}
             </dl>
           </aside>
 
@@ -165,7 +160,8 @@ export default function MintSection({
                 <div className="rounded-xl border dark:border-neutral-800 p-4">
                   <div className="text-xs opacity-60">Price</div>
                   <div className="font-tech font-semibold">
-                    {priceSolFmt} SOL{priceUsd ? <span className="opacity-70"> · ~${priceUsd}</span> : null}
+                    {priceSolLive == null ? "—" : `${priceSolFmt} SOL`}
+                    {priceUsd ? <span className="opacity-70"> · ~${priceUsd}</span> : null}
                   </div>
                 </div>
 
@@ -186,6 +182,7 @@ export default function MintSection({
                     variant="glow"
                     fullWidth
                     overlayGifSrc="/minting.gif"
+                    onPriceChange={setPriceSolLive}
                     onMintSuccess={handleMintSuccess}
                     onModalClose={handleMintSuccess}
                   />
@@ -235,13 +232,14 @@ export default function MintSection({
         <div className="fixed inset-x-0 bottom-4 z-40 px-4 sm:hidden">
           <div className="mx-auto max-w-md rounded-2xl border border-black/10 dark:border-white/10 bg-white/80 dark:bg-zinc-900/80 backdrop-blur shadow-xl p-3 flex flex-col items-center gap-3">
             <div className="text-sm font-tech text-center">
-              {priceSolFmt} SOL
+              {priceSolLive == null ? "—" : `${priceSolFmt} SOL`}
               {priceUsd ? <span className="opacity-70"> · ~${priceUsd}</span> : null}
             </div>
             <MintButton
               variant="glow"
               fullWidth={false}
               overlayGifSrc="/minting.gif"
+              onPriceChange={setPriceSolLive}
               onMintSuccess={handleMintSuccess}
               onModalClose={handleMintSuccess}
             />

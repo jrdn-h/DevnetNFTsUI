@@ -2,7 +2,6 @@
 
 import React, { useEffect, useMemo, useState } from "react";
 import dynamic from "next/dynamic";
-import bs58 from "bs58";
 
 import useUmiStore from "@/store/useUmiStore";
 import umiWithCurrentWalletAdapter from "@/lib/umi/umiWithCurrentWalletAdapter";
@@ -18,17 +17,20 @@ import {
   signAllTransactions,
   some,
   transactionBuilder,
+  unwrapOption,
 } from "@metaplex-foundation/umi";
+import { base58, base64 } from "@metaplex-foundation/umi/serializers";
 import {
   fetchCandyMachine,
   fetchCandyGuard,
   findMintCounterPda,
   safeFetchMintCounter,
+  safeFetchCandyGuard,
   mintV2,
 } from "@metaplex-foundation/mpl-candy-machine";
 import { fetchMetadata, findMetadataPda, findMasterEditionPda } from "@metaplex-foundation/mpl-token-metadata";
 import { ACCOUNT_SIZE as SPL_ACCOUNT_SIZE, MINT_SIZE as SPL_MINT_SIZE } from "@solana/spl-token";
-import { setComputeUnitLimit, addMemo } from "@metaplex-foundation/mpl-toolbox";
+import { setComputeUnitLimit, setComputeUnitPrice, addMemo } from "@metaplex-foundation/mpl-toolbox";
 import MintingOverlay from "@/components/MintingOverlay";
 
 // ---- Wallet button (no SSR) ----
@@ -36,6 +38,106 @@ const WalletMultiButton = dynamic(
   async () => (await import("@solana/wallet-adapter-react-ui")).WalletMultiButton,
   { ssr: false }
 );
+
+// ---- Eligibility preflight helpers ----
+async function preflightEligibility(umi: ReturnType<typeof umiWithCurrentWalletAdapter>, cmId: string, guardId: string, group?: string) {
+  const cm = await fetchCandyMachine(umi, publicKey(cmId));
+  const guard = await safeFetchCandyGuard(umi as any, publicKey(guardId)); // returns null if missing
+  if (!guard) return { ok: false, reason: "Candy Guard not found" };
+
+  const active = group
+    ? (guard.groups?.find((g:any) => String(g.label ?? '')===String(group))?.guards ?? {})
+    : (guard.guards ?? {});
+
+  // 1) Use on-chain time
+  const slot = await umi.rpc.getSlot();
+  const solanaTime = await umi.rpc.getBlockTime(slot);
+
+  const startDate = unwrapOption((active as any).startDate);
+  if (startDate && solanaTime != null && solanaTime < Number((startDate as any).date ?? startDate)) {
+    return { ok: false, reason: "Mint has not started yet" };
+  }
+
+  // 2) Wallet balance check against SOL payment (not incl. tx fees/rent)
+  const solPayment = unwrapOption((active as any).solPayment);
+  if (solPayment) {
+    const acct = await umi.rpc.getAccount(umi.identity.publicKey);
+    const need = Number((solPayment as any).lamports?.basisPoints ?? (solPayment as any).lamports ?? 0);
+    if (acct && 'lamports' in acct && Number(acct.lamports ?? 0) < need) return { ok:false, reason:"Not enough SOL for mint price" };
+  }
+
+  // 3) mintLimit counter (per-wallet)
+  const mintLimit = unwrapOption((active as any).mintLimit);
+  if (mintLimit) {
+    const pda = findMintCounterPda(umi, {
+      candyGuard: guard.publicKey,
+      candyMachine: cm.publicKey,
+      id: Number((mintLimit as any).id),
+      user: umi.identity.publicKey,
+    });
+    const counter = await safeFetchMintCounter(umi, pda);
+    if (counter && Number(counter.count) >= Number((mintLimit as any).limit)) {
+      return { ok:false, reason:"Per-wallet mint limit reached" };
+    }
+  }
+
+  return { ok: true as const };
+}
+
+async function pickEligibleGroup(umi: ReturnType<typeof umiWithCurrentWalletAdapter>, cmId: string, guardId: string) {
+  const guard = await safeFetchCandyGuard(umi as any, publicKey(guardId));
+  if (!guard) return { group: undefined, reason: "Candy Guard missing" };
+
+  const groups = guard.groups ?? [];
+  const labels = groups.map((g:any)=>String(g.label ?? ''));
+  for (const label of labels) {
+    if (!label) continue; // Skip empty labels
+    const ok = await preflightEligibility(umi, cmId, guardId, label);
+    if (ok.ok) return { group: label };
+  }
+  // try default guards
+  const def = await preflightEligibility(umi, cmId, guardId);
+  return def.ok ? { group: undefined } : { group: undefined, reason: def.reason };
+}
+
+// ---- Fee estimation helpers ----
+async function medianMicroLamportsPerCU(umi: any) {
+  try {
+    const r = await umi.rpc.call("getRecentPrioritizationFees", [{ accountKeys: [] }]);
+    const vals = (Array.isArray(r?.result?.value) ? r.result.value : [])
+      .map((x: any) => Number(x?.prioritizationFee || 0))
+      .filter(Number.isFinite)
+      .sort((a: number, b: number) => a - b);
+    return vals.length ? vals[Math.floor(vals.length / 2)] : 0;
+  } catch {
+    return 0;
+  }
+}
+
+async function withPriorityFeeAndAutoCU(umi: any, core: ReturnType<typeof transactionBuilder>) {
+  // draft = CU limit max + core, ONLY for sim
+  const draft = transactionBuilder().add(setComputeUnitLimit(umi, { units: 1_400_000 })).add(core);
+  const tx = await draft.buildWithLatestBlockhash(umi);
+
+  const serialized: Uint8Array = umi.transactions.serialize(tx);
+  const txB64: string = base64.deserialize(serialized)[0];
+
+  const sim = await umi.rpc.call("simulateTransaction", [
+    txB64,
+    { encoding: "base64", replaceRecentBlockhash: true, sigVerify: false },
+  ]);
+
+  const units = Number(sim?.result?.value?.unitsConsumed ?? 400_000);
+  const micro = await medianMicroLamportsPerCU(umi);
+  const cuLimit = Math.min(1_400_000, Math.ceil(units * 1.2));
+  const cuPrice = Math.max(micro, 50);
+
+  // **return a new builder**: CU first, then your core builder
+  return transactionBuilder()
+    .add(setComputeUnitLimit(umi, { units: cuLimit }))
+    .add(setComputeUnitPrice(umi, { microLamports: cuPrice }))
+    .add(core);
+}
 
   // ---- Config ----
 const CM_ID = process.env.NEXT_PUBLIC_CANDY_MACHINE_ID!;
@@ -46,7 +148,26 @@ const GUARD_ID =
   ""; // must exist if you're using guards
 const GROUP_LABEL = process.env.NEXT_PUBLIC_CM_GROUP_LABEL || undefined;
 const LAMPORTS_PER_SOL = 1_000_000_000;
-const DEFAULT_COMPUTE_UNITS = 850_000;
+
+
+// ---- Base58 conversion helper ----
+const toBase58 = (sig: unknown) =>
+  typeof sig === "string" ? sig : base58.deserialize(sig as Uint8Array)[0];
+
+// ---- Debug helpers ----
+const debugPrograms = (b: ReturnType<typeof transactionBuilder>) => {
+  const ids = b.getInstructions().map((ix) => ix.programId);
+  console.log("[mint] programs in tx:", ids.map(String));
+};
+
+async function debugSim(umi: any, b: ReturnType<typeof transactionBuilder>) {
+  const tx = await b.buildWithLatestBlockhash(umi);
+  const u8 = umi.transactions.serialize(tx);
+  const b64 = base64.deserialize(u8)[0];
+  const sim = await umi.rpc.call("simulateTransaction", [b64, { encoding: "base64", replaceRecentBlockhash: true, sigVerify: false }]);
+  console.log("[sim] err:", sim?.result?.value?.err);
+  console.log("[sim] logs:", sim?.result?.value?.logs);
+}
 
 // ---- Metadata fallback helper ----
 async function inflateFromMetadataUri(uri?: string) {
@@ -148,6 +269,7 @@ type Variant = "solid" | "glow";
 export default function MintButton({
   onMintSuccess,
   onModalClose,
+  onPriceChange,
   variant = "glow",
   fullWidth = true,
   label = "Mint Now",
@@ -155,6 +277,7 @@ export default function MintButton({
 }: {
   onMintSuccess?: (mintAddress: string) => void;
   onModalClose?: () => void;
+  onPriceChange?: (priceSol: number) => void;
   variant?: Variant;
   fullWidth?: boolean;
   label?: string;
@@ -177,13 +300,17 @@ export default function MintButton({
 
   // Pricing & fee estimation
   const [perMintPriceSol, setPerMintPriceSol] = useState<number>(0); // pulled from Candy Guard (SOL payment)
-  const [perTxFeeSol, setPerTxFeeSol] = useState<number>(0);         // dynamic (base + priority)
+
   const [perNftRentSol, setPerNftRentSol] = useState<number>(0);     // one-time account rent per NFT
 
   const estimatedCost = useMemo(
-    () => qty * (perMintPriceSol + perNftRentSol + perTxFeeSol),
-    [qty, perMintPriceSol, perNftRentSol, perTxFeeSol]
+    () => qty * (perMintPriceSol + perNftRentSol),
+    [qty, perMintPriceSol, perNftRentSol]
   );
+
+  // Guard group & eligibility
+  const [selectedGroup, setSelectedGroup] = useState<string | undefined>(undefined);
+  const [eligibilityReason, setEligibilityReason] = useState<string | null>(null);
 
   // USD pricing
   const solUsd = useSolUsd(60_000);
@@ -203,7 +330,7 @@ export default function MintButton({
     try {
       const guard = await fetchCandyGuard(umi, publicKey(GUARD_ID));
       const group = GROUP_LABEL
-        ? guard.groups.find((g: any) => String(g.label) === String(GROUP_LABEL))
+        ? guard.groups?.find((g: any) => String(g.label) === String(GROUP_LABEL))
         : null;
       const active = (group?.guards ?? guard.guards) || {};
       const sp = (active as any)?.solPayment;
@@ -226,61 +353,55 @@ export default function MintButton({
     }
   };
 
-  // Estimate per-tx fees in SOL (base fee per signature + priority fee by recent CU prices).
-  const estimatePerTxFeesSol = async (umi: ReturnType<typeof umiWithCurrentWalletAdapter>) => {
-    // Base fee per signature is effectively stable at 5000 lamports since fee rate governance was deprecated.
-    // Avoid deprecated getFees RPC (returns 410 on many providers).
-    const lamportsPerSig = 5_000;
 
-    // Priority fee (median µ-lamports per CU)
-    let microLamportsPerCU = 0;
-    try {
-      const r: any = await (umi.rpc as any).call?.("getRecentPrioritizationFees", [{ accountKeys: [] }]);
-      const arr = Array.isArray(r?.value) ? r.value : [];
-      if (arr.length) {
-        const vals = arr.map((x: any) => Number(x?.prioritizationFee || 0)).filter(Number.isFinite).sort((a: number, b: number)=>a-b);
-        microLamportsPerCU = vals[Math.floor(vals.length / 2)] || 0;
-      }
-    } catch {}
 
-    // ~2 sigs (wallet + mint key). This keeps us near Phantom's display.
-    const sigCount = 2;
-    const baseLamports = lamportsPerSig * sigCount;
-    const priorityLamports = Math.round((microLamportsPerCU * DEFAULT_COMPUTE_UNITS) / 1_000_000);
-
-    const totalLamports = Math.max(baseLamports + priorityLamports, lamportsPerSig); // never 0
-    return totalLamports / LAMPORTS_PER_SOL;
-  };
-
-  // Keep per-wallet cap fresh on connect; clamp max to 100
+  // Keep per-wallet cap fresh on connect; clamp max to 100 + eligibility check
   const refreshQtyCap = async (umi: ReturnType<typeof umiWithCurrentWalletAdapter>) => {
     const cm = await fetchCandyMachine(umi, publicKey(CM_ID));
-    const itemsAvailable = Number(cm.itemsLoaded ?? 0);
+    // Use itemsAvailable when present (preferred over itemsLoaded)
+    const total = Number((cm as any).data?.itemsAvailable ?? (cm as any).itemsAvailable ?? (cm as any).itemsLoaded ?? 0);
     const itemsRedeemed = Number(cm.itemsRedeemed ?? 0);
-    const remainingSupply = Math.max(0, itemsAvailable - itemsRedeemed);
+    const remainingSupply = Math.max(0, total - itemsRedeemed);
+
+    // Auto-select eligible guard group
+    let selectedGroup: string | undefined;
+    let eligibilityReason: string | null = null;
+
+    try {
+      const groupResult = await pickEligibleGroup(umi, CM_ID, GUARD_ID);
+      selectedGroup = groupResult.group;
+      eligibilityReason = groupResult.reason || null;
+      setSelectedGroup(selectedGroup);
+      setEligibilityReason(eligibilityReason);
+    } catch (e) {
+      console.warn("[mint] guard group selection failed:", e);
+      setEligibilityReason("Unable to check eligibility");
+    }
 
     let mintLimitId: number | undefined;
     let perWalletLeft = Number.POSITIVE_INFINITY;
 
     try {
-      const guard = await fetchCandyGuard(umi, publicKey(GUARD_ID));
-      const group = GROUP_LABEL ? guard.groups.find((g: any) => String(g.label) === String(GROUP_LABEL)) : null;
-      const active = (group?.guards ?? guard.guards) || {};
+      const guard = await safeFetchCandyGuard(umi, publicKey(GUARD_ID));
+      if (guard) {
+        const group = selectedGroup ? guard.groups?.find((g: any) => String(g.label) === String(selectedGroup)) : null;
+        const active = (group?.guards ?? guard.guards) || {};
 
-      if (active?.mintLimit && "limit" in active.mintLimit && "id" in active.mintLimit) {
-        const limit = Number(active.mintLimit.limit);
-        mintLimitId = Number(active.mintLimit.id ?? 0);
+        if (active?.mintLimit && "limit" in active.mintLimit && "id" in active.mintLimit) {
+          const limit = Number(active.mintLimit.limit);
+          mintLimitId = Number(active.mintLimit.id ?? 0);
 
-        const pda = findMintCounterPda(umi, {
-          candyGuard: guard.publicKey,
-          candyMachine: cm.publicKey,
-          id: mintLimitId,
-          user: umi.identity.publicKey,
-        });
+          const pda = findMintCounterPda(umi, {
+            candyGuard: guard.publicKey,
+            candyMachine: cm.publicKey,
+            id: mintLimitId,
+            user: umi.identity.publicKey,
+          });
 
-        const counter = await safeFetchMintCounter(umi, pda); // null if not initialized
-        const already = Number(counter?.count ?? 0);
-        perWalletLeft = Math.max(0, limit - already);
+          const counter = await safeFetchMintCounter(umi, pda); // null if not initialized
+          const already = Number(counter?.count ?? 0);
+          perWalletLeft = Math.max(0, limit - already);
+        }
       }
     } catch {
       // ignore, just clamp by supply
@@ -290,7 +411,7 @@ export default function MintButton({
     setMaxQty(mx);
     setQty((q) => Math.min(q, mx));
 
-    return { mintLimitId, remainingSupply, perWalletLeft, maxAllowedNow: mx };
+    return { mintLimitId, remainingSupply, perWalletLeft, maxAllowedNow: mx, selectedGroup, eligibilityReason };
   };
 
   // Snapshot utils (unchanged except template bugs fixed)
@@ -302,6 +423,18 @@ export default function MintButton({
       return null;
     }
     const db = await res.json();
+
+    // Validate DB structure
+    if (!db || typeof db !== 'object') {
+      console.warn("[mint] invalid rarity DB format:", db);
+      return null;
+    }
+
+    if (!db.items || !Array.isArray(db.items)) {
+      console.warn("[mint] rarity DB missing items array:", db);
+      return null;
+    }
+
     const snapshot: RaritySnapshot = {
       total: db.items.length,
       traits: db.traits,
@@ -340,13 +473,12 @@ export default function MintButton({
         const cm = await fetchCandyMachine(umi, publicKey(CM_ID));
         const collectionMintPk = cm.collectionMint;
 
-        const [priceSol, feeSol, rentSol] = await Promise.all([
+        const [priceSol, rentSol] = await Promise.all([
           readMintPriceFromGuard(umi),
-          estimatePerTxFeesSol(umi),
           estimatePerNftRentSol(umi, collectionMintPk), // NEW: account rent estimation
         ]);
         setPerMintPriceSol(priceSol || 0);
-        setPerTxFeeSol(Math.max(feeSol, 0));   // keep non-negative
+        onPriceChange?.(priceSol || 0);
         setPerNftRentSol(Math.max(rentSol, 0));
       } catch (e) {
         // keep calm: show at least a conservative rent so UI isn't 0
@@ -374,12 +506,20 @@ export default function MintButton({
     setStepIndex(0); // Preparing
 
     const cm = await fetchCandyMachine(umi, publicKey(CM_ID));
+
+    // Validate Candy Guard matches Candy Machine
+    const expectedGuard = cm.mintAuthority.toString();
+    if (GUARD_ID !== expectedGuard) {
+      console.warn("[mint] GUARD_ID mismatch!", { GUARD_ID, expectedGuard });
+      setStatus("Wrong Candy Guard for this Candy Machine");
+      return;
+    }
+
     const collectionMd = await fetchMetadata(umi, findMetadataPda(umi, { mint: cm.collectionMint }));
     const collectionUpdateAuthorityPk = collectionMd.updateAuthority;
 
     const nftMint = generateSigner(umi);
-    const builder = transactionBuilder()
-      .add(setComputeUnitLimit(umi, { units: DEFAULT_COMPUTE_UNITS }))
+    const coreBuilder = transactionBuilder()
       .add(addMemo(umi, { memo: "MetaMartian Mint" }))
       .add(
         mintV2(umi, {
@@ -389,15 +529,22 @@ export default function MintButton({
           collectionMint: cm.collectionMint,
           collectionUpdateAuthority: collectionUpdateAuthorityPk,
           tokenStandard: cm.tokenStandard,
-          ...(GROUP_LABEL ? { group: some(GROUP_LABEL) } : {}),
+          ...(selectedGroup ? { group: some(selectedGroup) } : {}),
           ...(mintLimitId != null ? { mintArgs: { mintLimit: some({ id: mintLimitId }) } } : {}),
         })
       );
 
+    // Use dynamic fees + compute limit
+    const tuned = await withPriorityFeeAndAutoCU(umi, coreBuilder);
+
+    // Debug: check programs and simulate
+    debugPrograms(tuned);
+    await debugSim(umi, tuned);
+
     // Await wallet
     setStepIndex(1); // Awaiting wallet approval
-    const { signature } = await builder.sendAndConfirm(umi); // approval + submit + confirm
-    const sig58 = bs58.encode(signature);
+    const { signature } = await tuned.sendAndConfirm(umi); // approval + submit + confirm
+    const sig58 = toBase58(signature);
 
     // Fetch on-chain metadata
     setStepIndex(4); // Fetching on-chain metadata
@@ -482,19 +629,27 @@ export default function MintButton({
   const mintBatch = async (umi: ReturnType<typeof umiWithCurrentWalletAdapter>, qtyLocal: number, mintLimitId?: number) => {
     setStepIndex(0); // Preparing
     const cm = await fetchCandyMachine(umi, publicKey(CM_ID));
+
+    // Validate Candy Guard matches Candy Machine
+    const expectedGuard = cm.mintAuthority.toString();
+    if (GUARD_ID !== expectedGuard) {
+      console.warn("[mint] GUARD_ID mismatch!", { GUARD_ID, expectedGuard });
+      setStatus("Wrong Candy Guard for this Candy Machine");
+      return;
+    }
+
     const collectionMd = await fetchMetadata(umi, findMetadataPda(umi, { mint: cm.collectionMint }));
     const collectionUpdateAuthorityPk = collectionMd.updateAuthority;
 
     setBatchNote(`Building ${qtyLocal} transactions…`);
 
-    const builders: ReturnType<typeof transactionBuilder>[] = [];
+    const coreBuilders: ReturnType<typeof transactionBuilder>[] = [];
     const nftMints: ReturnType<typeof generateSigner>[] = [];
     for (let i = 0; i < qtyLocal; i++) {
       const nftMint = generateSigner(umi);
       nftMints.push(nftMint);
-      builders.push(
+      coreBuilders.push(
         transactionBuilder()
-          .add(setComputeUnitLimit(umi, { units: DEFAULT_COMPUTE_UNITS }))
           .add(addMemo(umi, { memo: "MetaMartian Mint" }))
           .add(
             mintV2(umi, {
@@ -504,7 +659,7 @@ export default function MintButton({
               collectionMint: cm.collectionMint,
               collectionUpdateAuthority: collectionUpdateAuthorityPk,
               tokenStandard: cm.tokenStandard,
-              ...(GROUP_LABEL ? { group: some(GROUP_LABEL) } : {}),
+              ...(selectedGroup ? { group: some(selectedGroup) } : {}),
               ...(mintLimitId != null ? { mintArgs: { mintLimit: some({ id: mintLimitId }) } } : {}),
             })
           )
@@ -512,17 +667,33 @@ export default function MintButton({
     }
 
     setBatchNote("Preparing transactions…");
-    const txs = await Promise.all(builders.map((b) => b.buildWithLatestBlockhash(umi)));
-
-    // Wallet approval
-    setStepIndex(1); // Awaiting wallet approval
-    setBatchNote("Awaiting wallet approval…");
-    const signed = await signAllTransactions(
-      txs.map((tx, i) => ({ transaction: tx, signers: builders[i].getSigners(umi) }))
+    // Apply CU tuning to EACH builder (no packing for CMv3)
+    const tunedBuilders = await Promise.all(
+      coreBuilders.map((b) => withPriorityFeeAndAutoCU(umi, b))
     );
 
-    // Submit
-    setStepIndex(2); // Submitting
+    // Debug: check programs and simulate each transaction
+    tunedBuilders.forEach((b: ReturnType<typeof transactionBuilder>, i: number) => {
+      console.log(`[mint] Transaction ${i}:`);
+      debugPrograms(b);
+    });
+
+    // Debug simulation for first transaction only (to avoid spam)
+    if (tunedBuilders.length > 0) {
+      await debugSim(umi, tunedBuilders[0]);
+    }
+
+    // Build transactions
+    const txs = await Promise.all(tunedBuilders.map((b) => b.buildWithLatestBlockhash(umi)));
+
+    setStepIndex(1);
+    setBatchNote("Awaiting wallet approval…");
+    // One wallet popup for all transactions
+    const signed = await signAllTransactions(
+      txs.map((tx: any, i: number) => ({ transaction: tx, signers: tunedBuilders[i].getSigners(umi) }))
+    );
+
+    setStepIndex(2);
     setBatchNote("Submitting transactions…");
     const { blockhash, lastValidBlockHeight } = await umi.rpc.getLatestBlockhash();
     const sigs = await Promise.all(signed.map((tx) => umi.rpc.sendTransaction(tx)));
@@ -554,7 +725,7 @@ export default function MintButton({
     for (let i = 0; i < qtyLocal; i++) {
       setBatchNote(`Processing NFT ${i + 1} of ${qtyLocal}…`);
       const nftMint = nftMints[i];
-      const sig58 = bs58.encode(sigs[i]);
+      const sig58 = toBase58(sigs[i]); // 1:1 mapping now
 
       const mdPda = findMetadataPda(umi, { mint: nftMint.publicKey });
       const md = await pollMetadataOnce(umi, mdPda, 80, 100);
@@ -607,6 +778,12 @@ export default function MintButton({
       return;
     }
 
+    // Check eligibility
+    if (eligibilityReason) {
+      setStatus(eligibilityReason);
+      return;
+    }
+
     setBusy(true);
     setStepIndex(0);
     setStatus(null);
@@ -627,7 +804,10 @@ export default function MintButton({
         setStatus("Minted!");
         return;
       } else {
-        const { reveals, collectionMint } = await mintBatch(umi, allowed, mintLimitId);
+        const batchResult = await mintBatch(umi, allowed, mintLimitId);
+        if (!batchResult) return;
+
+        const { reveals, collectionMint } = batchResult;
 
         // Open multi-item modal with rarity enrich
         setStepIndex(5); // Opening…
@@ -637,7 +817,7 @@ export default function MintButton({
           byMetadata: new Map(),
         };
 
-        const revealItems = reveals.map((r) => {
+        const revealItems = reveals.map((r: any) => {
           const dbRow = r.metadataUri ? byMetadata.get(r.metadataUri) : undefined;
 
           let yourScore: number | undefined =
@@ -736,7 +916,7 @@ export default function MintButton({
             ].join(" ")}
           >
             <button
-              disabled={busy}
+              disabled={busy || !!eligibilityReason}
               onClick={onMint}
               className={[
                 "relative z-[1] inline-flex items-center justify-center gap-2",
@@ -760,7 +940,7 @@ export default function MintButton({
           </div>
         ) : (
           <button
-            disabled={busy}
+            disabled={busy || !!eligibilityReason}
             onClick={onMint}
             className={[
               "relative inline-flex items-center justify-center gap-2",
@@ -825,7 +1005,7 @@ export default function MintButton({
         </div>
 
         {/* Cost estimation */}
-        {signer && (perMintPriceSol > 0 || perTxFeeSol > 0 || perNftRentSol > 0) && (
+        {signer && (perMintPriceSol > 0 || perNftRentSol > 0) && (
           <div className="text-center leading-tight">
             <div className="text-sm font-medium text-black dark:text-white">
               You&apos;ll pay approximately{" "}
@@ -840,14 +1020,18 @@ export default function MintButton({
               ) : (
                 <>Mint price: 0 SOL (free), </>
               )}
-              ~{(perNftRentSol * qty).toFixed(4)} SOL one-time account rent
-              {" "}and ~{(perTxFeeSol * qty).toFixed(4)} SOL network fees. Values depend on congestion and rent rates.
+              ~{(perNftRentSol * qty).toFixed(4)} SOL one-time account rent.
+              (Network fees are small and variable, so not shown.)
             </div>
           </div>
         )}
 
         {/* status lives OUTSIDE the glow wrapper so it doesn't increase its height */}
-        {status && <p className="text-xs text-neutral-700 dark:text-neutral-300 text-center">{status}</p>}
+        {(status || eligibilityReason) && (
+          <p className="text-xs text-neutral-700 dark:text-neutral-300 text-center">
+            {eligibilityReason || status}
+          </p>
+        )}
       </div>
     </>
   );
