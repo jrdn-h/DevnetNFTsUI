@@ -5,7 +5,14 @@ import dynamic from "next/dynamic";
 import useUmiStore from "@/store/useUmiStore";
 import useMetaMartianReveal from "@/hooks/useMetaMartianReveal";
 import { useCollectionDB } from "@/store/useCollectionDB";
-import { scoreFromAttrs } from "@/lib/rarity/utils";
+
+// Gallery core imports
+import { adaptWalletAsset } from "@/gallery-core/types";
+import { useInfiniteGrid } from "@/gallery-core/useInfiniteGrid";
+import { useGalleryFilters } from "@/gallery-core/useGalleryFilters";
+import { useFindByNumber } from "@/gallery-core/useFindByNumber";
+import { GalleryControls } from "@/gallery-core/GalleryControls";
+import { GalleryGrid } from "@/gallery-core/GalleryGrid";
 
 
 import { publicKey } from "@metaplex-foundation/umi";
@@ -16,15 +23,7 @@ const WalletMultiButton = dynamic(
   { ssr: false }
 );
 
-type Card = {
-  mint: string;
-  name: string;
-  image?: string;
-  uri?: string;
-  attributes?: any[];
-  rarityScore?: number;
-  rarityRank?: number;
-};
+// Using CoreItem from gallery-core/types.ts
 
 type Props = {
   pageSize?: number;
@@ -50,8 +49,7 @@ export default function MetaMartianGallery({
   const [mounted, setMounted] = useState(false);
   const [loading, setLoading] = useState(false);
   const [err, setErr] = useState<string | null>(null);
-  const [items, setItems] = useState<Card[]>([]);
-  const [page, setPage] = useState(1);
+  const [rawItems, setRawItems] = useState<any[]>([]);
 
   // For smooth modal opening
   const [pending, startTransition] = useTransition();
@@ -107,6 +105,35 @@ export default function MetaMartianGallery({
     }
   }, [collectionMint, loadDB]);
 
+  // Convert raw wallet assets to CoreItem format
+  const coreItems = useMemo(() => {
+    // Pre-build O(1) DB lookups
+    const byUri = new Map(db?.items?.map(i => [i.metadata, i]) ?? []);
+    const byName = new Map(db?.items?.map(i => [i.name, i]) ?? []);
+
+    return rawItems.map(a => {
+      const dbMatch = (a.uri && byUri.get(a.uri)) || byName.get(a.name);
+      return adaptWalletAsset(a as any, dbMatch);
+    });
+  }, [rawItems, db?.items]);
+
+  // Gallery core hooks
+  const snapshot = db ? {
+    total: db.items.length,
+    traits: db.traits,
+    overall: db.overall,
+    traitAvg: db.traitAvg
+  } : undefined;
+
+  const { filteredSorted, traitTypes, traitValuesByType, selectedTraits, setSelectedTraits, clearAllTraits, sortKey, setSortKey } =
+    useGalleryFilters(coreItems, {
+      snapshot,
+      enableMintedFilter: false
+    });
+
+  const { visible, setVisible, sentinelRef } = useInfiniteGrid(120, 60);
+  const { searchNum, setSearchNum, flash, setFlash, sticky, setSticky, onSearch } = useFindByNumber(filteredSorted, 60);
+
   // load wallet NFTs and filter by collection (DAS approach)
   useEffect(() => {
     if (!signer || !collectionMint) return;
@@ -125,40 +152,8 @@ export default function MetaMartianGallery({
 
         if (cancelled) return;
 
-        // Pre-build O(1) DB lookups
-        const byUri = new Map(db?.items?.map(i => [i.metadata, i]) ?? []);
-        const byName = new Map(db?.items?.map(i => [i.name, i]) ?? []);
-
-        const cards = assets.map((a: any) => {
-          const mint = a.id as string;
-          const name = a.content?.metadata?.name ?? a.content?.json?.name ?? "MetaMartian";
-          const image = a.content?.links?.image ?? a.content?.json?.image;
-          const uri = a.content?.json_uri ?? a.content?.metadata?.uri;
-
-          const dbItem = (uri && byUri.get(uri)) || byName.get(name);
-          return {
-            mint,
-            name,
-            image,
-            uri,
-            attributes: dbItem?.attributes ?? a.content?.json?.attributes,
-            rarityScore: dbItem?.score,
-            rarityRank: dbItem?.rank
-          };
-        });
-
-        // sort by trailing number if present
-        cards.sort((a, b) => {
-          const num = (s?: string) => Number((s ?? "").match(/(\d+)(?!.*\d)/)?.[1] ?? NaN);
-          const an = num(a.name);
-          const bn = num(b.name);
-          if (!Number.isNaN(an) && !Number.isNaN(bn)) return an - bn;
-          return a.name.localeCompare(b.name);
-        });
-
         if (!cancelled) {
-          setItems(cards);
-          setPage(1);
+          setRawItems(assets);
         }
       } catch (e: any) {
         if (!cancelled) setErr(e?.message ?? String(e));
@@ -168,13 +163,11 @@ export default function MetaMartianGallery({
     })();
 
     return () => { cancelled = true; };
-  }, [signer?.publicKey, collectionMint, db?.items]);
+  }, [signer?.publicKey, collectionMint]);
 
-  // pagination
-  const total = items.length;
-  const pages = Math.max(1, Math.ceil(total / pageSize));
-  const start = (page - 1) * pageSize;
-  const pageItems = items.slice(start, start + pageSize);
+  // Gallery core logic
+  const shown = filteredSorted.slice(0, visible);
+  const total = filteredSorted.length;
 
   if (!mounted) return null;
 
@@ -198,119 +191,113 @@ export default function MetaMartianGallery({
         </div>
       </div>
 
-      {err && <pre className="text-xs text-red-600 whitespace-pre-wrap">{err}</pre>}
+      <div className="grid gap-6 lg:grid-cols-[380px_minmax(0,1fr)]">
+        {/* LEFT: controls */}
+        <GalleryControls
+          searchNum={searchNum}
+          setSearchNum={setSearchNum}
+          onSearch={() => onSearch((i: number, item: any) => {
+            startTransition(() => {
+              const modalItems = filteredSorted.map((x) => ({
+                name: x.name,
+                image: x.image,
+                metadataUri: x.metadataUri,
+                indexKey: x.indexKey,
+                attributes: x.attributes,
+                score: x.score,
+                rank: x.rank,
+                mint: x.indexKey, // fallback for mint
+              }));
+              openWithData({
+                items: modalItems,
+                initialIndex: i,
+                title: "Your MetaMartian",
+                collectionMint: collectionMint ?? undefined,
+                rarityIndexSnapshot: snapshot,
+                onModalClose: () => setSticky(item.indexKey),
+              });
+            });
+          }, setVisible)}
+          showMinted={false}
+          minterFilter="all"
+          setMinterFilter={()=>{}}
+          sortKey={sortKey}
+          setSortKey={setSortKey}
+          traitTypes={traitTypes}
+          traitValuesByType={traitValuesByType}
+          selectedTraits={selectedTraits}
+          toggleTraitValue={(tt, val) => {
+            setSelectedTraits(prev => {
+              const next: Record<string, Set<string>> = {};
+              for (const k of Object.keys(prev)) next[k] = new Set(prev[k]);
+              (next[tt] ??= new Set()).has(val) ? next[tt].delete(val) : next[tt].add(val);
+              if (next[tt].size === 0) delete next[tt];
+              return next;
+            });
+          }}
+          clearAllTraits={clearAllTraits}
+        />
 
-      {!err && (
-        <>
-          <div
-            className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-3"
-            style={{ contentVisibility: 'auto', containIntrinsicSize: '800px' }}
-          >
-            {pageItems.map((it) => (
-              <button
-                key={it.mint}
-                id={`mm-card-${it.mint}`}
-                onPointerEnter={() => {
-                  // Preload image on hover
-                  if (it.image) {
-                    const img = new Image();
-                    img.src = it.image;
-                  }
-                }}
-                onPointerDown={() => {
-                  // Preload image on touch/press
-                  if (it.image) {
-                    const img = new Image();
-                    img.src = it.image;
-                  }
-                }}
-                onClick={(e) => {
-                  e.preventDefault();
-                  // One-tap open without blocking main thread
-                  startTransition(() => {
-                    const itemsForModal = items.map((x) => {
-                      const dbItem = x.uri ? getItemByMetadata(x.uri) : undefined;
-                      return {
-                        indexKey: x.mint,        // stable for scroll-follow
-                        name: x.name,
-                        image: x.image,
-                        metadataUri: x.uri,
-                        attributes: x.attributes, // might be undefined -> modal lazily fetches
-                        score: Number(x.rarityScore ?? dbItem?.score ?? NaN),
-                        rank: Number(x.rarityRank ?? dbItem?.rank ?? NaN),
-                        mint: x.mint,
-                      };
-                    });
-                    const modalIndex = Math.max(0, items.findIndex((x2) => x2.mint === it.mint));
+        {/* RIGHT: Grid + infinite scroll */}
+        <div>
+          {err && <pre className="text-xs text-red-600 whitespace-pre-wrap">{err}</pre>}
 
-                    openWithData({
-                      items: itemsForModal,
-                      initialIndex: modalIndex,
-                      title: "Your MetaMartian",
-                      collectionMint: collectionMint ?? undefined,
-                      rarityIndexSnapshot: db ? {
-                        total: db.items.length,
-                        traits: db.traits,
-                        overall: db.overall,
-                        traitAvg: db.traitAvg,
-                      } : undefined,
-                    });
-                  });
-                }}
-                className="group border rounded-xl overflow-hidden dark:border-neutral-800 cursor-pointer"
-                title="Open details"
-              >
-                <div className="aspect-square bg-neutral-100 dark:bg-neutral-900 overflow-hidden">
-                  {it.image ? (
-                    <img
-                      src={it.image}
-                      alt={it.name}
-                      className="h-full w-full object-cover transition-transform duration-200 ease-out group-hover:scale-[1.03] will-change-transform"
-                      draggable={false}
-                      loading="lazy"
-                      decoding="async"
-                      fetchPriority="low"
-                    />
-                  ) : (
-                    <div className="h-full w-full grid place-items-center text-xs opacity-60">
-                      No image
-                    </div>
+          {!err && (
+            <>
+              {loading && (
+                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
+                  {Array.from({ length: 24 }).map((_, i) => (
+                    <div key={i} className="aspect-square animate-pulse rounded-xl bg-neutral-200 dark:bg-neutral-800" />
+                  ))}
+                </div>
+              )}
+
+              {!loading && (
+                <>
+                  <GalleryGrid
+                    items={shown}
+                    flashKey={flash}
+                    stickyKey={sticky}
+                    onCardClick={(item) => {
+                      startTransition(() => {
+                        const modalItems = filteredSorted.map((x) => ({
+                          name: x.name,
+                          image: x.image,
+                          metadataUri: x.metadataUri,
+                          indexKey: x.indexKey,
+                          attributes: x.attributes,
+                          score: x.score,
+                          rank: x.rank,
+                          mint: x.indexKey, // fallback for mint
+                        }));
+                        const i = filteredSorted.findIndex(x => x.indexKey === item.indexKey);
+                        openWithData({
+                          items: modalItems,
+                          initialIndex: i,
+                          title: "Your MetaMartian",
+                          collectionMint: collectionMint ?? undefined,
+                          rarityIndexSnapshot: snapshot,
+                        });
+                      });
+                    }}
+                    onCardHover={(item) => {
+                      // clear sticky highlight on hover of that card
+                      if (sticky === item.indexKey) {
+                        setSticky(null);
+                      }
+                    }}
+                    showMintedBadge={false}
+                  />
+                  <div ref={sentinelRef} className="h-12" />
+                  {shown.length >= filteredSorted.length && (
+                    <div className="py-6 text-center text-xs opacity-60">— end of collection —</div>
                   )}
-                </div>
-                <div className="p-2">
-                  <div className="text-sm font-medium truncate">{it.name}</div>
-                  <div className="text-[10px] opacity-60 truncate">{it.mint.slice(0, 8)}…{it.mint.slice(-8)}</div>
-                  <div className="text-[10px] opacity-60 mt-1 whitespace-nowrap">
-                    Score: {Number.isFinite(it.rarityScore) ? Math.round(it.rarityScore!).toLocaleString() : "—"} · #{Number.isFinite(it.rarityRank) ? it.rarityRank : "—"}
-                  </div>
-                </div>
-              </button>
-            ))}
-          </div>
-
-          {pages > 1 && (
-            <div className="flex items-center justify-center gap-2 pt-2">
-              <button
-                onClick={() => setPage((p) => Math.max(1, p - 1))}
-                disabled={page === 1}
-                className="px-3 py-1 text-sm rounded border dark:border-neutral-800 disabled:opacity-40"
-              >
-                Prev
-              </button>
-              <span className="text-xs opacity-70">
-                Page {page} / {pages}
-              </span>
-              <button
-                onClick={() => setPage((p) => Math.min(pages, p + 1))}
-                disabled={page === pages}
-                className="px-3 py-1 text-sm rounded border dark:border-neutral-800 disabled:opacity-40"
-              >
-                Next
-              </button>
-            </div>
+                </>
+              )}
+            </>
           )}
-        </>
-      )}
+        </div>
+      </div>
     </div>
   );
 }
