@@ -241,24 +241,7 @@ export default function MetaMartianRevealModal({
                 {index + 1} / {items.length}
               </div>
             )}
-            {items.length > 1 && (
-              <>
-                <button
-                  onClick={() => setIndex((i) => Math.max(0, i - 1))}
-                  disabled={index === 0}
-                  className="rounded-full border border-black/10 px-2 py-1 text-xs opacity-80 hover:opacity-100 disabled:opacity-40 dark:border-white/10"
-                >
-                  Prev
-                </button>
-                <button
-                  onClick={() => setIndex((i) => Math.min(items.length - 1, i + 1))}
-                  disabled={index >= items.length - 1}
-                  className="rounded-full border border-black/10 px-2 py-1 text-xs opacity-80 hover:opacity-100 disabled:opacity-40 dark:border-white/10"
-                >
-                  Next
-                </button>
-              </>
-            )}
+            {/* Navigation buttons removed - now outside panel */}
             <button
               onClick={() => onClose()}
               className="rounded-full border border-black/10 px-3 py-1 text-xs opacity-80 hover:opacity-100 dark:border-white/10"
@@ -296,36 +279,7 @@ export default function MetaMartianRevealModal({
                 <div className="pointer-events-none absolute inset-0 ring-1 ring-inset ring-black/5 dark:ring-white/5" />
               </div>
 
-              {/* === ARROWS OUTSIDE THE PANEL EDGES === */}
-              {items.length > 1 && (
-                <>
-                  {/* LEFT (anchored to panel's left edge; moved outward by 16px) */}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setIndex((i) => Math.max(0, i - 1)); }}
-                    disabled={index === 0}
-                    aria-label="Previous"
-                    className="absolute top-1/2 left-0 z-[90] grid h-12 w-12 place-items-center rounded-full border border-black/10 bg-white/85 shadow-lg backdrop-blur hover:bg-white disabled:opacity-40 dark:border-white/10 dark:bg-zinc-900/85 dark:hover:bg-zinc-900"
-                    style={{ transform: "translate(calc(-100% - 16px), -50%)" }}
-                  >
-                    <svg viewBox="0 0 24 24" className="block h-5 w-5" aria-hidden>
-                      <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  </button>
-
-                  {/* RIGHT (anchored to panel's right edge; moved outward by 16px) */}
-                  <button
-                    onClick={(e) => { e.stopPropagation(); setIndex((i) => Math.min(items.length - 1, i + 1)); }}
-                    disabled={index >= items.length - 1}
-                    aria-label="Next"
-                    className="absolute top-1/2 right-0 z-[90] grid h-12 w-12 place-items-center rounded-full border border-black/10 bg-white/85 shadow-lg backdrop-blur hover:bg-white disabled:opacity-40 dark:border-white/10 dark:bg-zinc-900/85 dark:hover:bg-zinc-900"
-                    style={{ transform: "translate(calc(100% + 16px), -50%)" }}
-                  >
-                    <svg viewBox="0 0 24 24" className="block h-5 w-5" aria-hidden style={{ transform: "scaleX(-1)" }}>
-                      <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
-                    </svg>
-                  </button>
-                </>
-              )}
+              {/* Navigation arrows moved outside panel */}
 
               <div className="mt-3 text-center">
                 <div className="text-lg font-medium">{active?.name}</div>
@@ -442,6 +396,35 @@ export default function MetaMartianRevealModal({
           </div>
         </div>
       </div>
+
+      {/* === OUTSIDE-OF-POPUP NAV ARROWS === */}
+      {open && items.length > 1 && (
+        <div className="pointer-events-none fixed inset-y-0 left-0 right-0 z-[80] flex items-center justify-between px-3 sm:px-6">
+          {/* Prev */}
+          <button
+            onClick={(e) => { e.stopPropagation(); setIndex((i) => Math.max(0, i - 1)); }}
+            disabled={index === 0}
+            aria-label="Previous"
+            className="pointer-events-auto grid h-12 w-12 place-items-center rounded-full border border-black/10 bg-white/85 shadow-lg backdrop-blur hover:bg-white disabled:opacity-40 dark:border-white/10 dark:bg-zinc-900/85 dark:hover:bg-zinc-900"
+          >
+            <svg viewBox="0 0 24 24" className="block h-5 w-5" aria-hidden>
+              <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+
+          {/* Next */}
+          <button
+            onClick={(e) => { e.stopPropagation(); setIndex((i) => Math.min(items.length - 1, i + 1)); }}
+            disabled={index >= items.length - 1}
+            aria-label="Next"
+            className="pointer-events-auto grid h-12 w-12 place-items-center rounded-full border border-black/10 bg-white/85 shadow-lg backdrop-blur hover:bg-white disabled:opacity-40 dark:border-white/10 dark:bg-zinc-900/85 dark:hover:bg-zinc-900"
+          >
+            <svg viewBox="0 0 24 24" className="block h-5 w-5" aria-hidden style={{ transform: "scaleX(-1)" }}>
+              <path d="M15 18l-6-6 6-6" stroke="currentColor" strokeWidth="2" fill="none" strokeLinecap="round" strokeLinejoin="round"/>
+            </svg>
+          </button>
+        </div>
+      )}
     </div>
   );
 }

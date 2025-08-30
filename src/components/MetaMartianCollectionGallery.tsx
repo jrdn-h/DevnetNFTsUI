@@ -22,6 +22,29 @@ const normVal = (v: any) =>
 
 
 
+function FoundBeacon() {
+  return (
+    <>
+      {/* soft spinning gradient halo */}
+      <span
+        className="pointer-events-none absolute -inset-[3px] rounded-2xl
+                   bg-[conic-gradient(at_50%_50%,#22c55e_0deg,#06b6d4_120deg,#a78bfa_240deg,#22c55e_360deg)]
+                   animate-[spin_2.8s_linear_infinite] opacity-55 blur-md"
+      />
+      {/* bright ring + glow */}
+      <span
+        className="pointer-events-none absolute inset-0 rounded-xl ring-4 ring-emerald-400/80
+                   shadow-[0_0_0_3px_rgba(16,185,129,.50),0_0_40px_12px_rgba(16,185,129,.35)]"
+      />
+      {/* ripple ping */}
+      <span
+        className="pointer-events-none absolute left-1/2 top-1/2 h-28 w-28 -translate-x-1/2 -translate-y-1/2
+                   rounded-full border-2 border-emerald-400/50 animate-ping"
+      />
+    </>
+  );
+}
+
 export default function MetaMartianCollectionGallery({
   pageStep = 60,
   initialVisible = 120,
@@ -60,8 +83,42 @@ export default function MetaMartianCollectionGallery({
   // NEW: persistent highlight that survives until user hovers the card
   const [stickyHighlight, setStickyHighlight] = useState<string | null>(null);
 
+  // Flash highlight for found cards
+  const HIGHLIGHT_MS = 1600; // how long the big flashy effect lasts
+  const [flashHighlight, setFlashHighlight] = useState<string | null>(null);
+  const flashTimerRef = useRef<number | null>(null);
+
+  // Cleanup timer on unmount
+  useEffect(() => {
+    return () => {
+      if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
+    };
+  }, []);
+
   // Score computation cache
   const scoreCacheRef = useRef<Map<string, number>>(new Map());
+
+  // ADD: fast O(1) minted lookup via typed array (fallback to Set for non-numeric indexes)
+  const mintedFlags = useMemo(() => {
+    const len = db?.items?.length ?? 0;
+    const flags = new Uint8Array(len || 0);
+    if (!len || !mintedSet || mintedSet.size === 0) return flags;
+    mintedSet.forEach((idxStr) => {
+      const n = Number(idxStr);
+      if (Number.isFinite(n) && n >= 0 && n < len) flags[n] = 1;
+    });
+    return flags;
+  }, [mintedSet, db?.items?.length]);
+
+  const hasMinted = useCallback(
+    (idxStr: string) => {
+      const n = Number(idxStr);
+      if (Number.isFinite(n) && mintedFlags.length) return mintedFlags[n] === 1;
+      // fallback for non-numeric indexes
+      return mintedSet.has(idxStr);
+    },
+    [mintedFlags, mintedSet]
+  );
 
   // Background scroll follower: listens to modal nav events
   useEffect(() => {
@@ -129,14 +186,12 @@ export default function MetaMartianCollectionGallery({
     return map;
   }, [db]);
 
-  // Minted/not-minted counts for current trait-filtered set
-  const { mintedCount, unmintedCount } = useMemo(() => {
-    const items = db?.items ?? [];
+  // ADD: single source of truth for trait filtering
+  const traitFiltered = useMemo(() => {
+    let arr: CollectionDB["items"] = db?.items ?? [];
     const active = Object.keys(selectedTraits);
-
-    let base = items;
     if (active.length > 0) {
-      base = base.filter((it) => {
+      arr = arr.filter((it) => {
         for (const tt of active) {
           const allowed = selectedTraits[tt];
           const found = it.attributes?.find((a) => normType(a?.trait_type) === tt);
@@ -146,12 +201,18 @@ export default function MetaMartianCollectionGallery({
         return true;
       });
     }
+    return arr;
+  }, [db?.items, selectedTraits]);
 
+  // REPLACE: minted/unminted counts derived from the traitFiltered list
+  const { mintedCount, unmintedCount } = useMemo(() => {
+    const base = traitFiltered;
     let minted = 0;
-    for (const it of base) if (mintedSet.has(it.index)) minted++;
-    const unminted = Math.max(0, base.length - minted);
-    return { mintedCount: minted, unmintedCount: unminted };
-  }, [db?.items, selectedTraits, mintedSet]);
+    for (let i = 0; i < base.length; i++) {
+      if (hasMinted(base[i].index)) minted++;
+    }
+    return { mintedCount: minted, unmintedCount: Math.max(0, base.length - minted) };
+  }, [traitFiltered, hasMinted]);
 
   const toggleTraitValue = (tt: string, val: string) => {
     setSelectedTraits((prev) => {
@@ -165,27 +226,14 @@ export default function MetaMartianCollectionGallery({
   };
   const clearAllTraits = () => setSelectedTraits({});
 
-  // Filter + sort view
+  // REPLACE: build the grid list from the same traitFiltered list
   const filteredSorted = useMemo(() => {
-    let arr: CollectionDB["items"] = db?.items ?? [];
+    let arr = traitFiltered;
 
     if (minterFilter === "minted") {
-      arr = arr.filter((it) => mintedSet.has(it.index));
+      arr = arr.filter((it) => hasMinted(it.index));
     } else if (minterFilter === "unminted") {
-      arr = arr.filter((it) => !mintedSet.has(it.index));
-    }
-
-    const active = Object.keys(selectedTraits);
-    if (active.length > 0) {
-      arr = arr.filter((it) => {
-        for (const tt of active) {
-          const allowed = selectedTraits[tt];
-          const found = it.attributes?.find((a) => normType(a?.trait_type) === tt);
-          const val = found ? normVal(found.value) : "None";
-          if (!allowed.has(val)) return false;
-        }
-        return true;
-      });
+      arr = arr.filter((it) => !hasMinted(it.index));
     }
 
     const out = [...arr];
@@ -204,7 +252,7 @@ export default function MetaMartianCollectionGallery({
         break;
     }
     return out;
-  }, [db?.items, minterFilter, sortKey, selectedTraits, mintedSet]);
+  }, [traitFiltered, minterFilter, sortKey, hasMinted]);
 
   // Fast index → position lookup in the current filtered+sorted view
   const posByIndex = useMemo(() => {
@@ -315,6 +363,21 @@ export default function MetaMartianCollectionGallery({
 
     // Preload hero image (non-blocking)
     if (item?.image) { const img = new Image(); img.src = item.image; }
+
+    // Flash highlight immediately (respect reduced motion)
+    const prefersReducedMotion =
+      typeof window !== "undefined" &&
+      window.matchMedia &&
+      window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+
+    if (!prefersReducedMotion) {
+      setFlashHighlight(item.index);
+      if (flashTimerRef.current) window.clearTimeout(flashTimerRef.current);
+      flashTimerRef.current = window.setTimeout(() => setFlashHighlight(null), HIGHLIGHT_MS);
+    } else {
+      // Go straight to sticky accent
+      setStickyHighlight(item.index);
+    }
 
     // Open quickly with prebuilt items
     openWithData({
@@ -498,8 +561,8 @@ export default function MetaMartianCollectionGallery({
             {!dbLoading &&
               db &&
               shown.map((it) => {
-                const isMinted = mintedSet.has(it.index);
-                const isHighlighted = stickyHighlight === it.index || highlight === it.index; // combine flash + sticky
+                const isMinted = hasMinted(it.index);
+                const isHighlighted = stickyHighlight === it.index || flashHighlight === it.index; // combine flash + sticky
 
                 // Get display score/rank with coercion + cached fallback + binary search
                 const { score, rank } = getDisplayScoreRank(it);
@@ -542,11 +605,13 @@ export default function MetaMartianCollectionGallery({
                         });
                       });
                     }}
-                    className={`group relative overflow-hidden rounded-xl border text-left transition hover:shadow-md dark:border-neutral-800 ${
-                      isHighlighted ? "ring-2 ring-emerald-400" : ""
-                    }`}
+                    className={`group relative overflow-hidden rounded-xl border text-left transition
+                      dark:border-neutral-800 hover:shadow-md
+                      ${isHighlighted ? "scale-[1.015]" : ""}
+                      ${!isHighlighted && stickyHighlight === it.index ? "ring-2 ring-emerald-400/70 shadow-[0_0_0_2px_rgba(16,185,129,.25)]" : ""}`}
                     title="View details"
                   >
+                    {isHighlighted && <FoundBeacon />}
                     <div className="pointer-events-none absolute left-2 top-2 z-10 flex gap-1">
                       <span
                         className={`rounded-full px-2 py-0.5 text-[10px] font-medium ${
