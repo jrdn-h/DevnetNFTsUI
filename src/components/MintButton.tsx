@@ -228,11 +228,9 @@ export default function MintButton({
 
   // Estimate per-tx fees in SOL (base fee per signature + priority fee by recent CU prices).
   const estimatePerTxFeesSol = async (umi: ReturnType<typeof umiWithCurrentWalletAdapter>) => {
-    let lamportsPerSig = 5_000; // fallback
-    try {
-      const r: any = await (umi.rpc as any).call?.("getFees", []);
-      lamportsPerSig = Number(r?.value?.feeCalculator?.lamportsPerSignature ?? lamportsPerSig);
-    } catch {}
+    // Base fee per signature is effectively stable at 5000 lamports since fee rate governance was deprecated.
+    // Avoid deprecated getFees RPC (returns 410 on many providers).
+    const lamportsPerSig = 5_000;
 
     // Priority fee (median µ-lamports per CU)
     let microLamportsPerCU = 0;

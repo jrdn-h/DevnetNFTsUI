@@ -10,22 +10,35 @@ export default function useSolUsd(pollMs = 60_000) {
     async function pull() {
       let price: number | null = null;
       try {
-        const r = await fetch("https://price.jup.ag/v6/price?ids=SOL", { cache: "no-store" });
+        // Try CoinGecko API first (default)
+        const r = await fetch(
+          "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
+          { cache: "no-store" }
+        );
         if (r.ok) {
           const j = await r.json();
-          price = Number(j?.data?.SOL?.price ?? null);
+          price = Number(j?.solana?.usd ?? null);
         }
       } catch {}
 
       if (price == null) {
         try {
-          const r2 = await fetch(
-            "https://api.coingecko.com/api/v3/simple/price?ids=solana&vs_currencies=usd",
-            { cache: "no-store" }
-          );
+          // Fallback to Jupiter Price API V3
+          const r = await fetch("https://lite-api.jup.ag/price/v3?ids=SOL", { cache: "no-store" });
+          if (r.ok) {
+            const j = await r.json();
+            price = Number(j?.data?.SOL?.price ?? null);
+          }
+        } catch {}
+      }
+
+      if (price == null) {
+        try {
+          // Final fallback to legacy v6 API for compatibility (will be deprecated)
+          const r2 = await fetch("https://price.jup.ag/v6/price?ids=SOL", { cache: "no-store" });
           if (r2.ok) {
             const j2 = await r2.json();
-            price = Number(j2?.solana?.usd ?? null);
+            price = Number(j2?.data?.SOL?.price ?? null);
           }
         } catch {}
       }
