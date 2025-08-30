@@ -119,6 +119,12 @@ export default function MetaMartianCollectionGallery({
   const prevYRef = useRef<number>(0);
   const idleTimerRef = useRef<number | null>(null);
 
+  // NEW: idle-hide after inactivity
+  const [dockHiddenByIdle, setDockHiddenByIdle] = useState(false);
+  const idleHideTimerRef = useRef<number | null>(null);
+  const dockRef = useRef<HTMLDivElement | null>(null);
+  const [dockHovering, setDockHovering] = useState(false);
+
   // Traits UX
   const [traitQuery, setTraitQuery] = useState("");
 
@@ -391,15 +397,52 @@ export default function MetaMartianCollectionGallery({
     };
   }, [dockOpen]);
 
+  // NEW: hide the dock after N ms of *global* inactivity
+  useEffect(() => {
+    if (!dockOpen) return;
+
+    const IDLE_HIDE_MS = 3000; // tweak "few seconds" here
+
+    const resetIdle = () => {
+      // if some activity happens, cancel hide and (optionally) reveal
+      if (dockHiddenByIdle) setDockHiddenByIdle(false);
+      if (idleHideTimerRef.current) window.clearTimeout(idleHideTimerRef.current);
+
+      idleHideTimerRef.current = window.setTimeout(() => {
+        // don't hide if user is interacting with the dock (hover/focus) or traits sheet is open
+        const hasFocusInside = !!(dockRef.current && dockRef.current.contains(document.activeElement));
+        if (!traitsOpen && !dockHovering && !hasFocusInside) {
+          setDockHiddenByIdle(true);
+        }
+      }, IDLE_HIDE_MS);
+    };
+
+    const opts = { passive: true } as AddEventListenerOptions;
+    const events: Array<keyof WindowEventMap> = ["mousemove","keydown","wheel","touchstart","touchmove","scroll"];
+    events.forEach(ev => window.addEventListener(ev, resetIdle, opts));
+    resetIdle(); // start timer immediately
+
+    return () => {
+      events.forEach(ev => window.removeEventListener(ev, resetIdle, opts));
+      if (idleHideTimerRef.current) window.clearTimeout(idleHideTimerRef.current);
+    };
+  }, [dockOpen, traitsOpen, dockHovering, dockHiddenByIdle]);
+
   // Mouse/touch reveal effect
   useEffect(() => {
     if (!dockOpen) return;
 
     const onMove = (e: MouseEvent) => {
       // show if mouse nears the bottom 104px of the viewport
-      if (e.clientY > window.innerHeight - 104) setDockHiddenByScroll(false);
+      if (e.clientY > window.innerHeight - 104) {
+        setDockHiddenByScroll(false);
+        setDockHiddenByIdle(false);   // NEW: cancel idle hide
+      }
     };
-    const onTouchStart = () => setDockHiddenByScroll(false);
+    const onTouchStart = () => {
+      setDockHiddenByScroll(false);
+      setDockHiddenByIdle(false);     // NEW
+    };
 
     window.addEventListener("mousemove", onMove, { passive: true });
     window.addEventListener("touchstart", onTouchStart, { passive: true });
@@ -411,6 +454,9 @@ export default function MetaMartianCollectionGallery({
   }, [dockOpen]);
 
   const traitTypes = useMemo(() => (db ? Object.keys(db.traits || {}).sort() : []), [db]);
+
+  // NEW: don't hide while traits sheet is open
+  const dockShouldHide = (dockHiddenByScroll || dockHiddenByIdle) && !traitsOpen;
 
   const traitValuesByType = useMemo(() => {
     const map: Record<string, string[]> = {};
@@ -850,11 +896,24 @@ export default function MetaMartianCollectionGallery({
       {dockOpen && (
         <div
           className={`fixed left-1/2 bottom-6 z-40 -translate-x-1/2 transition-transform duration-300 ${
-            dockHiddenByScroll ? "translate-y-[140%]" : "translate-y-0"
+            dockShouldHide ? "translate-y-[140%]" : "translate-y-0"
           }`}
         >
           {/* group enables hover lift */}
-          <div className="relative group w-[min(100vw-1rem,80rem)] px-3">
+          <div
+            ref={dockRef}                       // NEW
+            className="relative group w-[min(100vw-1rem,80rem)] px-3"
+            onMouseEnter={() => setDockHovering(true)}     // NEW
+            onMouseLeave={() => setDockHovering(false)}    // NEW
+            onFocusCapture={() => setDockHovering(true)}   // NEW (keep visible while focused)
+            onBlurCapture={() => {
+              // give the browser a tick to update activeElement
+              setTimeout(() => {
+                const inside = !!(dockRef.current && dockRef.current.contains(document.activeElement));
+                if (!inside) setDockHovering(false);
+              }, 0);
+            }}
+          >
 
             {/* Ambient glow (strong, layered; intensifies on hover) */}
             <span className="pointer-events-none absolute inset-0 -z-10 transition-opacity duration-200">
